@@ -50,6 +50,11 @@ let revealed = new Set();
 let lastProgress = { done: 0, total: 0 };
 let consoleCount = 0;
 
+// Authenticator secrets the content script captures while it enrols a fresh
+// identity in 2SV. Kept in memory so the lane can answer a challenge in the same
+// run, before the identity object that was queued has been re-read from storage.
+const liveOtp = new Map();
+
 // ---------------------------------------------------------------- boot / store
 
 async function refresh() {
@@ -270,6 +275,9 @@ function renderAccounts() {
     if (codes.length) {
       acts.append(smallAction(`codes ${codes.length}`, () => copyText(codes.join("\n"))));
     }
+    if (account.otp_secret) {
+      acts.append(smallAction("otp", () => copyText(account.otp_secret)));
+    }
     if (account.status === "pending") {
       acts.append(smallAction("finalise", () => finaliseAccount(account)));
     }
@@ -481,6 +489,7 @@ function accountText(account) {
     `user_id: ${account.user_id || ""}`,
     `cookie: ${account.cookie || ""}`,
     `backup_codes: ${codes.join(", ")}`,
+    `otp_secret: ${account.otp_secret || ""}`,
     `status: ${account.status || "live"}`,
     `note: Google SSO - sign in with Google using ${account.email || ""}`,
     `created_at: ${account.created_at || ""}`,
@@ -843,8 +852,8 @@ async function mintWithRetry(key, email, attempts = 4) {
   throw lastError || new Error("could not mint a backup code");
 }
 
-// The tenant policy that deadlocks a first sign-in, and the switch that fixes
-// it without losing the API path.
+// The tenant policy that blocks a first sign-in, and the switch that fixes it
+// without losing the API path.
 function mintHint(error) {
   const text = String(error?.message || error || "").toLowerCase();
   if (error?.status === 403) {
@@ -854,7 +863,7 @@ function mintHint(error) {
     /2-?step|two-step|policy|not enrolled|verification code|not allowed/.test(text) ||
     error?.status === 400
   ) {
-    return "Admin console → Security → Authentication → 2-Step Verification → Enforcement: Off; codes still mint through the API";
+    return "Admin console → Security → Authentication → 2-Step Verification → Methods: Any except verification codes via text, phone call, Enforcement: On";
   }
   if (error?.quota) return "rate limited — rerun this identity later";
   return "";
@@ -1016,10 +1025,8 @@ async function runBatch(queue, preflight) {
       await remember(`[lane ${laneIndex + 1}] ${identity.email}`, "step");
 
       try {
-        // A first sign-in from a fresh identity is a risk challenge; the only
-        // factor that beats it without a phone is a backup code. Without one
-        // Google deadlocks on the tenant's 2SV policy, so mint before the tab
-        // opens and abort this identity if minting fails.
+        // Backup codes are minted before the tab opens: they are the fallback
+        // if the authenticator enrollment cannot complete on this run.
         if (!identity.codes?.length) {
           try {
             const codes = await mintWithRetry(key, identity.email);
@@ -1044,6 +1051,7 @@ async function runBatch(queue, preflight) {
             timeout: settings.timeout || 240,
             shouldStop: () => stopRequested,
             log: (text) => remember(text, "info"),
+            otpFor: (email) => liveOtp.get(String(email || "").toLowerCase()) || "",
             onSession: async (cookie) => {
               provisional = {
                 id: uid("acc"),
@@ -1057,6 +1065,7 @@ async function runBatch(queue, preflight) {
                 cookie,
                 status: "pending",
                 backup_codes: identity.codes || [],
+                otp_secret: liveOtp.get(String(identity.email).toLowerCase()) || identity.otp_secret || null,
                 tab_id: null,
                 store_id: storeId || null,
                 created_at: new Date().toISOString(),
@@ -1088,6 +1097,7 @@ async function runBatch(queue, preflight) {
           cookie: result.cookie,
           status: live ? "live" : "pending",
           backup_codes: identity.codes || [],
+          otp_secret: liveOtp.get(String(identity.email).toLowerCase()) || identity.otp_secret || null,
           tab_id: result.keepTabId || null,
           store_id: storeId || null,
           created_at: provisional?.created_at || new Date().toISOString(),
@@ -1617,7 +1627,12 @@ async function checkTwoStep() {
     await remember(label, status.enrolled ? "ok" : "warn");
     if (status.enforced) {
       await remember(
-        "org 2SV enforcement is on — fresh identities deadlock at first sign-in; set Enforcement to Off (backup codes still mint through the API)",
+        "org 2SV enforcement is On — check that Methods excludes verification codes via text/phone call, otherwise every fresh identity is offered SMS",
+        "warn"
+      );
+    } else {
+      await remember(
+        "org 2SV enforcement is Off — fresh identities fall back to the phone challenge; set Enforcement On with SMS/call disallowed",
         "warn"
       );
     }
@@ -1769,9 +1784,9 @@ async function refreshChecklist() {
           "twofa-status",
           `${status.email}: enrolled=${status.enrolled} enforced=${status.enforced}`
         );
-        if (status.enforced) {
+        if (!status.enforced) {
           await remember(
-            `${status.email}: org 2SV enforcement is on \u2014 fresh identities deadlock at first sign-in; set Enforcement to Off (codes still mint through the API)`,
+            `${status.email}: 2SV enforcement is Off \u2014 fresh identities fall back to the phone challenge; set Enforcement On with Methods excluding text/call`,
             "warn"
           );
         } else if (!status.enrolled) {
@@ -2206,6 +2221,22 @@ function wire() {
   }
 
   api.runtime.onMessage.addListener((message) => {
+    if (message?.type === "identity-totp" && message.secret) {
+      const email = String(message.email || "").toLowerCase();
+      liveOtp.set(email, message.secret);
+      mutate((draft) => {
+        const row = draft.identities.find(
+          (entry) => String(entry.email || "").toLowerCase() === email
+        );
+        if (row) row.otp_secret = message.secret;
+        for (const account of draft.accounts) {
+          if (String(account.email || "").toLowerCase() === email) {
+            account.otp_secret = message.secret;
+          }
+        }
+      }).catch(() => {});
+      remember(`${email || "identity"}: authenticator enrolled, secret saved`, "ok");
+    }
     if (message?.type === "log-line" && message.line) {
       appendLogNode(message.line);
     }

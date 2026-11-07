@@ -39,7 +39,7 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://accounts.google.com/*"],
+      "matches": ["https://accounts.google.com/*", "https://*.google.com/*"],
       "js": ["content/google.js"],
       "run_at": "document_idle",
       "all_frames": true

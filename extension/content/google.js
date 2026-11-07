@@ -15,6 +15,9 @@
     repeats: 0,
     triedAnotherWay: false,
     codeSubmitted: false,
+    otpSecret: "",
+    otpSubmitted: false,
+    enrolled: false,
     reported: new Set(),
   };
 
@@ -84,6 +87,120 @@
     return null;
   }
 
+  // Google's terms interstitial and consent buttons carry the whole label in a
+  // single button, so an exact match is safer than a substring one here.
+  function clickExact(labels, scopeSelector) {
+    const wanted = labels.map((label) => label.toLowerCase());
+    const nodes = [
+      ...document.querySelectorAll(scopeSelector || 'button,[role="button"],a'),
+    ].filter(visible);
+    for (const node of nodes) {
+      const label = `${node.getAttribute("aria-label") || ""} ${node.innerText || ""}`
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase();
+      if (!label) continue;
+      if (wanted.some((want) => label === want || label.startsWith(`${want} `))) {
+        try {
+          node.click();
+          return label.slice(0, 60);
+        } catch (_) {
+          // try the next match
+        }
+      }
+    }
+    return null;
+  }
+
+  // ---------------------------------------------------------------- local TOTP
+  // A content script is a classic script, so the RFC 6238 math is inlined
+  // instead of imported from lib/totp.js. Same defaults: SHA-1, 6 digits, 30s.
+
+  const BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+  function base32Bytes(secret) {
+    const clean = String(secret || "")
+      .toUpperCase()
+      .replace(/[\s-]/g, "")
+      .replace(/=+$/, "");
+    const out = [];
+    let buffer = 0;
+    let bits = 0;
+    for (const char of clean) {
+      const index = BASE32.indexOf(char);
+      if (index < 0) return null;
+      buffer = (buffer << 5) | index;
+      bits += 5;
+      if (bits >= 8) {
+        bits -= 8;
+        out.push((buffer >>> bits) & 0xff);
+        buffer &= (1 << bits) - 1;
+      }
+    }
+    return out.length ? Uint8Array.from(out) : null;
+  }
+
+  async function totpNow(secret, period = 30, digits = 6) {
+    try {
+      const key = base32Bytes(secret);
+      if (!key || !globalThis.crypto || !crypto.subtle) return "";
+      const message = new Uint8Array(8);
+      let rest = Math.floor(Date.now() / 1000 / period);
+      for (let index = 7; index >= 0; index -= 1) {
+        message[index] = rest & 0xff;
+        rest = Math.floor(rest / 256);
+      }
+      const hmac = await crypto.subtle.importKey(
+        "raw",
+        key,
+        { name: "HMAC", hash: "SHA-1" },
+        false,
+        ["sign"]
+      );
+      const mac = new Uint8Array(await crypto.subtle.sign("HMAC", hmac, message));
+      const offset = mac[mac.length - 1] & 0x0f;
+      const binary =
+        ((mac[offset] & 0x7f) << 24) |
+        ((mac[offset + 1] & 0xff) << 16) |
+        ((mac[offset + 2] & 0xff) << 8) |
+        (mac[offset + 3] & 0xff);
+      return String(binary % 10 ** digits).padStart(digits, "0");
+    } catch (_) {
+      return "";
+    }
+  }
+
+  // Google prints the setup key as sixteen base32 characters in groups of four,
+  // either as page text or inside a read-only field.
+  function scrapeSecret() {
+    const text = document.body ? document.body.innerText || "" : "";
+    const grouped = /\b([A-Z2-7]{4}(?:[\s-]+[A-Z2-7]{4}){3,7})\b/.exec(text);
+    if (grouped) return grouped[1].replace(/[\s-]/g, "");
+    for (const input of [...document.querySelectorAll("input")].filter(visible)) {
+      const value = String(input.value || "").replace(/[\s-]/g, "");
+      if (/^[A-Z2-7]{16,32}$/.test(value)) return value;
+    }
+    // Google sometimes renders the key in its own node with no separators.
+    for (const node of document.querySelectorAll("div,span,code,b,strong")) {
+      const value = String(node.innerText || "").replace(/[\s-]/g, "");
+      if (/^[A-Z2-7]{16,32}$/.test(value) && visible(node)) return value;
+    }
+    return "";
+  }
+
+  function keepSecret(secret) {
+    if (!secret || state.kept === secret) return;
+    state.kept = secret;
+    const email = state.creds?.email || "";
+    note(`authenticator secret captured for ${email || "this identity"} (${secret.length} chars)`);
+    try {
+      const sent = api.runtime.sendMessage({ type: "identity-totp", email, secret });
+      if (sent && typeof sent.catch === "function") sent.catch(() => {});
+    } catch (_) {
+      // extension context gone
+    }
+  }
+
   function pressNext() {
     const direct =
       document.querySelector("#identifierNext button") ||
@@ -118,6 +235,10 @@
     for (const input of inputs) {
       const type = (input.type || "text").toLowerCase();
       if (type === "password" || type === "email" || type === "checkbox") continue;
+      // The setup key sits in a read-only field on the same screen as the code
+      // input; never type the current code into it.
+      if (input.readOnly || input.disabled) continue;
+      if (/^[A-Z2-7]{16,32}$/.test(String(input.value || "").replace(/[\s-]/g, ""))) continue;
       const hints = `${input.getAttribute("aria-label") || ""} ${input.name || ""} ${
         input.placeholder || ""
       }`.toLowerCase();
@@ -156,6 +277,9 @@
     if (state.fillUrl !== location.href) {
       state.fillUrl = location.href;
       state.fills = { identifier: 0, password: 0 };
+      // A TOTP is reusable and time-based: a new page that asks for it again
+      // (enrolment -> challenge) must be allowed to answer.
+      state.otpSubmitted = false;
     }
 
     // identifier
@@ -208,24 +332,145 @@
       return;
     }
 
+    // The brand-new-account terms interstitial. It carries no field, so without
+    // this click the whole flow sits on it until the lane times out.
+    if (
+      /welcome to your new account|before you continue to|your organization administrator manages|terms of service/i.test(
+        body
+      ) &&
+      !document.querySelector('input[type="password"]')
+    ) {
+      act("interstitial", () => {
+        const hit =
+          clickExact(["i understand", "accept", "agree", "got it", "ok", "continue"]) ||
+          clickByText(["i understand", "accept", "agree"]);
+        if (hit) once("interstitial", `accepted: ${hit}`);
+        return hit;
+      });
+      return;
+    }
+
+    // Enrollment finished: keep the secret and dismiss the confirmation.
+    if (
+      state.otpSecret &&
+      /(2|two)-step verification is on|you.re all set|2-step verification is turned on/i.test(body)
+    ) {
+      keepSecret(state.otpSecret);
+      if (!state.enrolled) {
+        act("enrol-done", () => {
+          state.enrolled = true;
+          const hit = clickByText(["done", "turn on", "finish"], "button,[role=button],a");
+          once("enrol-done", "2SV enrolled with the authenticator app");
+          return hit;
+        });
+      }
+      return;
+    }
+
+    // 2SV enrolment with the authenticator app. Google only offers the phone
+    // when the tenant policy allows SMS, so with SMS disallowed this is the
+    // screen that has to be finished before the challenge can be answered.
+    const enrollPage = /scan the qr|can.t scan|setup key|enter a setup key|set up (2|two)-step|add a second step/i.test(
+      body
+    );
+
+    // A signed-in challenge that offers the authenticator, answered with the
+    // secret captured at enrolment. Checked before enrolment so a stored secret
+    // is spent on the challenge rather than on a second set-up attempt.
+    if (
+      !state.otpSubmitted &&
+      (state.creds.otp || state.otpSecret) &&
+      body.includes("authenticator") &&
+      !enrollPage
+    ) {
+      const field = codeField();
+      if (field && visible(field)) {
+        act("otp-challenge", () => {
+          state.otpSubmitted = true;
+          totpNow(state.creds.otp || state.otpSecret).then((value) => {
+            if (!value) return;
+            fill(field, value);
+            note("authenticator challenge answered");
+            setTimeout(() => pressNext(), 1400);
+          });
+          return true;
+        });
+        return;
+      }
+      if (
+        act("pick-challenge-auth", () =>
+          clickByText(["authenticator app", "use your authenticator"], "button,[role=button],li,div")
+        )
+      ) {
+        return;
+      }
+      // nothing clickable on this screen: let the phone/method branches below run
+    }
+
+    const enrolling = body.includes("authenticator app") && enrollPage;
+
+    if (enrolling && !state.enrolled) {
+      if (!state.otpSecret) {
+        const secret = scrapeSecret();
+        if (secret) {
+          state.otpSecret = secret;
+          keepSecret(secret);
+        }
+      }
+
+      if (!state.otpSecret && /can.t scan|setup key|enter a setup key/i.test(body)) {
+        act("cant-scan", () => {
+          const hit = clickByText([
+            "can't scan it",
+            "cant scan it",
+            "can\u2019t scan it",
+            "can't scan the qr code",
+            "enter a setup key",
+            "setup key",
+          ]);
+          if (hit) once("cant-scan", `setup key panel -> ${hit}`);
+          return hit;
+        });
+        return;
+      }
+
+      const field = codeField();
+      if (state.otpSecret && field && visible(field) && !state.otpSubmitted) {
+        act("otp-fill", () => {
+          state.otpSubmitted = true;
+          totpNow(state.otpSecret).then((value) => {
+            if (!value) return;
+            fill(field, value);
+            note("authenticator code entered");
+            setTimeout(() => pressNext(), 1400);
+          });
+          return true;
+        });
+        return;
+      }
+
+      if (/scan the qr/i.test(body)) {
+        act("qr-next", () => pressNext());
+        return;
+      }
+
+      act("pick-auth", () => {
+        const hit = clickByText(["authenticator app"], "button,[role=button],[role=radio],li,div");
+        if (hit) once("pick-auth", `enrol method -> ${hit}`);
+        return hit;
+      });
+      return;
+    }
+
     // backup code entry
     if (
       !state.codeSubmitted &&
       code &&
       (body.includes("backup code") || body.includes("one of your backup codes"))
     ) {
-      if (body.includes("enter one of your backup codes") || body.includes("use a backup code")) {
-        act("pick-backup", () => {
-          const hit = clickByText([
-            "enter one of your backup codes",
-            "use a backup code",
-            "backup code",
-          ]);
-          if (hit) once("pick-backup", `method list -> ${hit}`);
-          return hit;
-        });
-        return;
-      }
+      // The field wins over the option: once the entry screen is open its body
+      // still mentions "one of your backup codes", and clicking that label again
+      // would loop without ever typing the code.
       const field = codeField();
       if (field && visible(field)) {
         act("code", () => {
@@ -237,6 +482,18 @@
           }, 1800);
           state.codeSubmitted = true;
           return true;
+        });
+        return;
+      }
+      if (body.includes("enter one of your backup codes") || body.includes("use a backup code")) {
+        act("pick-backup", () => {
+          const hit = clickByText([
+            "enter one of your backup codes",
+            "use a backup code",
+            "backup code",
+          ]);
+          if (hit) once("pick-backup", `method list -> ${hit}`);
+          return hit;
         });
         return;
       }
@@ -286,12 +543,26 @@
       return;
     }
 
-    // Enforcement on + no enrolled method: the account cannot reach any factor,
-    // so no code can be entered. This is a tenant setting, not a browser issue.
+    // Phone wall. Google falls back to SMS whenever the tenant policy allows it,
+    // and an unenrolled account has nothing else to offer.
+    if (
+      /enter a phone number|get a verification code|text message with a verification code|standard message and data rates/i.test(
+        body
+      )
+    ) {
+      once(
+        "phone-wall",
+        "phone challenge — the tenant still allows SMS. Admin console → Security → Authentication → 2-Step Verification → Methods: Any except verification codes via text, phone call, Enforcement: On. Google then offers the authenticator app and the run enrols it automatically"
+      );
+      return;
+    }
+
+    // Enforcement on, but the policy allows no method this account can satisfy:
+    // nothing can be enrolled, so no code can be entered. Tenant setting.
     if (/2-step verification policy|don.?t meet your organization/i.test(body)) {
       once(
         "policy",
-        "tenant 2SV enforcement is blocking this account — set Admin console → Security → Authentication → 2-Step Verification → Enforcement to Off"
+        "the 2SV policy offers no usable method — set Admin console → Security → Authentication → 2-Step Verification → Methods: Any except verification codes via text, phone call (leave phone and security key in the list only if you can satisfy them)"
       );
       return;
     }
@@ -320,12 +591,17 @@
         email: message.email,
         password: message.password,
         code: message.code,
+        otp: message.otp || "",
       };
       // A new identity means a new flow, even in the same document.
       if (state.lastEmail !== message.email) {
         state.lastEmail = message.email;
         state.triedAnotherWay = false;
         state.codeSubmitted = false;
+        state.otpSecret = "";
+        state.otpSubmitted = false;
+        state.enrolled = false;
+        state.kept = "";
         state.reported = new Set();
         state.lastAction = "";
         note(`handed credentials for ${message.email}`);

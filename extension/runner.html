@@ -363,8 +363,9 @@
                 The admin needs an enrolled second factor so the tenant is not half-configured. The
                 authenticator below is local: it turns the setup secret into the current 6-digit
                 code, so no phone or app is needed. Per-identity backup codes are minted through
-                the Admin API &mdash; enforcement is not what makes them work, and leaving it on
-                deadlocks every freshly created identity.
+                the Admin API. Enforcement has to be <b>On</b> with SMS and phone call removed from
+                the allowed methods &mdash; that is the setting that stops Google offering a phone
+                number at every fresh account's first sign-in.
               </p>
               <ol class="steps">
                 <li>
@@ -381,21 +382,22 @@
                 <li>
                   Open
                   <a href="https://admin.google.com/ac/security/2sv" target="_blank" rel="noopener noreferrer">
-                    Admin console &rarr; Security &rarr; 2-Step Verification
+                    Admin console &rarr; Security &rarr; Authentication &rarr; 2-Step Verification
                   </a>
-                  and set <b>Enforcement</b> to <b>Off</b> for the org or the OU that holds the
-                  identities. With enforcement on and no method enrolled, Google answers every
-                  first sign-in with <i>&ldquo;Your sign-in settings don't meet your
-                  organization's 2-Step Verification policy&rdquo;</i> and the account never
-                  reaches the challenge.
+                  for the OU that holds the identities and set <b>Enforcement</b> to <b>On</b>, with
+                  <b>Methods</b> set to <i>Any except verification codes via text, phone call</i>.
+                  With enforcement off, a fresh account has no second factor, so Google falls back
+                  to <i>&ldquo;Enter a phone number to get a text message&rdquo;</i>. With SMS
+                  disallowed, it offers the authenticator instead and the run enrols it.
                 </li>
                 <li>
                   The run mints ten one-time codes per identity with
                   <span class="mono">verificationCodes.generate</span> before opening the Roblox
-                  tab, keeps them on the identity and the account export, and the Google content
-                  script enters one through <b>Try another way &rarr; Enter one of your backup
-                  codes</b>. Codes mint fine with enforcement off. <b>Mint 2SV codes</b> on the Run
-                  tab does the same for identities that already exist.
+                  tab and keeps them on the identity and the account export. At the sign-in the
+                  Google content script accepts the new-account terms, enrols the authenticator
+                  app (secret saved as <span class="mono">otp_secret</span>), and falls back to
+                  <b>Try another way &rarr; Enter one of your backup codes</b>. <b>Mint 2SV
+                  codes</b> on the Run tab does the same for identities that already exist.
                 </li>
               </ol>
               <div class="controls">

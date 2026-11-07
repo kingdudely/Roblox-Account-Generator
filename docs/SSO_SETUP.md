@@ -484,38 +484,45 @@ finalising, not throwing away (§8.2).
 
 `tools/open_signup.py --ua mac` raises the odds if you want to inspect by hand.
 
-### 8.1 The first-sign-in challenge — and the backup code that beats it
+### 8.1 The first-sign-in challenge — SMS vs the authenticator
 
 A freshly created Cloud Identity user has no sign-in history, so Google challenges
-the first password sign-in with **"Verify it's you → enter a phone number"**. This
-is the single hard wall on the whole path, and three intuitive fixes do not work:
+the first password sign-in. **Which challenge you get is decided by the tenant
+policy, not by the browser:**
 
-| attempt | why it fails |
+| 2SV policy | what the first sign-in shows |
 |---|---|
-| Set a recovery email | Google still offers phone only — recovery email is for account *recovery*, not the risk challenge |
-| Enforce 2-Step Verification | with enforcement on and no method enrolled the account deadlocks: *"Your sign-in settings don't meet your organization's 2SV policy"* |
-| Delete and recreate the users | identical state (new account, no history) and Google reserves deleted addresses ~20 days, so the same local parts are unusable anyway |
+| Enforcement **Off** | *"Enter a phone number to get a text message with a verification code"* — the only factor a bare account has |
+| Enforcement **On**, Methods allow SMS/call | the same phone challenge, now backed by policy |
+| Enforcement **On**, Methods `Any except verification codes via text, phone call` | an **authenticator app** enrollment, or **Try another way**, because SMS is disallowed — this is the path that needs no phone |
+| Enforcement **On**, Methods allow nothing enroll-able | *"Your sign-in settings don't meet your organization's 2-Step Verification policy"* — a deadlock, not a missing feature |
 
-Enforcing 2SV with methods set to `Any except verification codes via text, phone
-call` also deadlocks, because enrollment itself needs a method the policy forbids.
-There is no admin-side control to enroll a TOTP secret for a user — the Admin SDK
-exposes `twoStepVerification.turnOff` and nothing that turns it on, deliberately:
-an admin who could mint a second factor would make 2SV decorative.
+So the working configuration is **Enforcement On** with **Methods = Any except
+verification codes via text, phone call**. Enforcement off is what produces the
+phone wall; enforcement on with an unusable method list is what produces the
+policy message.
 
-**What does work is a backup verification code.** Ten are minted per user, and
-Google accepts one at the challenge screen:
+**What the extension does at that screen**
 
-1. Admin console → user → **Security** → **2-Step Verification** →
-   `GET BACKUP VERIFICATION CODES` → `GENERATE NEW CODES` → **SAVE**
-2. At the challenge: **Try another way → Enter one of your backup codes**
+1. Clicks **I understand** on the *"Welcome to your new account"* terms
+   interstitial. It has no field, so a driver that only fills inputs sits on it
+   until the lane times out.
+2. Picks **Authenticator app**, opens **Can't scan it?**, scrapes the 16-character
+   setup key, computes the RFC 6238 code locally (SHA-1, 6 digits, 30 s) and
+   finishes enrollment. The secret is stored on the identity and the account as
+   `otp_secret` and exported with them.
+3. If a challenge offers **Enter one of your backup codes**, it uses the code the
+   Admin API minted first; an enrolled authenticator secret is the fallback.
 
-Enforcement has to be **Off** for the OU holding the identities: enforcement
-with no method enrolled is exactly what produces *"Your sign-in settings don't
-meet your organization's 2-Step Verification policy"*, and the account never
-reaches the challenge where a code could be entered. Minting is not gated by
-enforcement, so nothing is lost. The extension mints automatically before each
-identity enters a lane; **Mint 2SV codes** on the Run tab does it for identities
-that already exist.
+**Backup codes, minted from the API.** Ten are minted per user with
+`POST /users/{user}/verificationCodes/generate`; minting is not gated by
+enforcement. The extension mints before each identity enters a lane; **Mint 2SV
+codes** on the Run tab does it for identities that already exist.
+
+From the console, the same thing by hand: Admin console → user → **Security** →
+**2-Step Verification** → `GET BACKUP VERIFICATION CODES` → `GENERATE NEW CODES`
+→ **SAVE**. At the challenge: **Try another way → Enter one of your backup
+codes**.
 
 Or mint them from code, which is the version worth using:
 

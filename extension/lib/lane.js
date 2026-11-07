@@ -417,7 +417,7 @@ async function waitForGoogle(tabId, timeout, shouldStop, log) {
   throw new Error("sso init did not reach Google");
 }
 
-async function pumpCredentials(tab, identity, code, timeout, shouldStop, storeId, log) {
+async function pumpCredentials(tab, identity, code, timeout, shouldStop, storeId, log, otpFor) {
   const deadline = Date.now() + timeout;
   let lastNote = 0;
   let sent = 0;
@@ -446,6 +446,7 @@ async function pumpCredentials(tab, identity, code, timeout, shouldStop, storeId
           email: identity.email,
           password: identity.password,
           code,
+          otp: (typeof otpFor === "function" ? otpFor(identity.email) : "") || identity.otp_secret || "",
         });
         sent += 1;
       } catch (_) {
@@ -498,6 +499,7 @@ export async function runIdentity(options) {
     log,
     keepTabs = false,
     onSession,
+    otpFor,
   } = options;
 
   const started = Date.now();
@@ -542,7 +544,8 @@ export async function runIdentity(options) {
       budget,
       shouldStop,
       storeId,
-      logFor
+      logFor,
+      otpFor
     );
 
     if (googleTab.id !== tabId) await closeTab(googleTab.id);
