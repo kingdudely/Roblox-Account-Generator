@@ -30,6 +30,7 @@ import {
   subdomainFrom,
   fullDomain,
 } from "./lib/duckdns.js";
+import { parseTotp, totpCode, secondsRemaining } from "./lib/totp.js";
 
 const ORIGINS = [
   "https://accounts.google.com/*",
@@ -77,6 +78,7 @@ function render() {
   renderQueue();
   renderPhone();
   renderDuckdns();
+  renderTotp();
   renderSettings();
 }
 
@@ -356,6 +358,59 @@ function renderDuckdns() {
   $("duck-sub").value = suggestedSubdomain();
   $("duck-value").value = duck.value || "";
   setText("duck-status", duck.answer || "no record written yet");
+}
+
+// --------------------------------------------------------------- authenticator
+
+function defaultTotpEmail() {
+  const key = state.keys.find((entry) => entry.status === "ok") || state.keys[0];
+  return key?.admin || (key?.domain ? `admin@${key.domain}` : "");
+}
+
+let totpBusy = false;
+
+async function updateTotp() {
+  if (totpBusy) return;
+  totpBusy = true;
+  try {
+    const totp = state?.totp || {};
+    const node = $("totp-code");
+    if (!node) return;
+    if (!totp.secret) {
+      node.textContent = "------";
+      setText("totp-countdown", "\u2014");
+      return;
+    }
+    node.textContent = await totpCode(totp.secret, totp);
+    setText("totp-countdown", `${secondsRemaining(totp.period)}s`);
+  } catch (_) {
+    setText("totp-code", "------");
+    setText("totp-countdown", "bad secret");
+  } finally {
+    totpBusy = false;
+  }
+}
+
+function renderTotp() {
+  if (!state) return;
+  const totp = state.totp || {};
+  const email = $("totp-email");
+  const secret = $("totp-secret");
+
+  if (email && document.activeElement !== email) {
+    email.value = totp.email || defaultTotpEmail();
+  }
+  if (secret && document.activeElement !== secret) {
+    secret.value = totp.secret || "";
+  }
+
+  setText(
+    "totp-status",
+    totp.secret
+      ? `saved \u00b7 ${totp.issuer || "authenticator"} \u00b7 ${totp.email || "no admin email"}`
+      : "no secret saved"
+  );
+  updateTotp();
 }
 
 function renderConsoleLog() {
@@ -1025,6 +1080,14 @@ async function handlePayload(raw, source = "pasted") {
   const text = String(raw || "").trim();
   if (!text) return;
 
+  // An authenticator QR is not a phone-gate payload. Route it to the setup card
+  // wherever it was pasted or dropped.
+  if (/^otpauth:\/\//i.test(text)) {
+    switchTab("setup");
+    await applyTotp(text, source);
+    return;
+  }
+
   switchTab("phone");
 
   if (/^sms(t?o)?:/i.test(text)) {
@@ -1276,6 +1339,129 @@ function isImageFile(file) {
   );
 }
 
+// -------------------------------------------------------------------- auth setup
+
+function totpInput() {
+  const raw = $("totp-secret").value.trim();
+  if (!raw) throw new Error("paste the authenticator secret or otpauth:// URI");
+  return parseTotp(raw);
+}
+
+async function saveTotp() {
+  try {
+    const parsed = totpInput();
+    await totpCode(parsed.secret, parsed);
+    const typed = $("totp-email").value.trim().toLowerCase();
+    const email = typed || parsed.email || defaultTotpEmail();
+    await mutate((draft) => {
+      draft.totp = { ...parsed, email };
+    });
+    await refresh();
+    await refreshChecklist();
+    await remember(`authenticator saved${email ? ` for ${email}` : ""}`, "ok");
+  } catch (error) {
+    setText("totp-status", error.message || String(error));
+    await remember(`authenticator: ${error.message || error}`, "error");
+  }
+}
+
+async function clearTotp() {
+  await mutate((draft) => {
+    draft.totp = {
+      email: "",
+      secret: "",
+      algorithm: "SHA1",
+      digits: 6,
+      period: 30,
+      issuer: "",
+      label: "",
+    };
+  });
+  const secret = $("totp-secret");
+  if (secret) secret.value = "";
+  await refresh();
+  await refreshChecklist();
+  await remember("authenticator secret cleared", "info");
+}
+
+async function applyTotp(payload, source = "QR") {
+  const text = String(payload || "").trim();
+  if (!/^otpauth:\/\//i.test(text)) {
+    setText("totp-status", `no otpauth:// URI in that ${source}`);
+    await remember(`authenticator ${source}: not an otpauth URI`, "warn");
+    return false;
+  }
+
+  try {
+    const parsed = parseTotp(text);
+    await totpCode(parsed.secret, parsed);
+    const typed = $("totp-email").value.trim().toLowerCase();
+    const email = parsed.email || typed || defaultTotpEmail();
+    await mutate((draft) => {
+      draft.totp = { ...parsed, email };
+    });
+    await refresh();
+    await refreshChecklist();
+    await remember(`authenticator QR imported${email ? ` for ${email}` : ""}`, "ok");
+    return true;
+  } catch (error) {
+    setText("totp-status", error.message || String(error));
+    await remember(`authenticator QR: ${error.message || error}`, "error");
+    return false;
+  }
+}
+
+async function decodeTotpFile(file) {
+  if (!file || !isImageFile(file)) {
+    await remember("the authenticator QR must be an image", "warn");
+    return;
+  }
+
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("could not read the image"));
+    reader.readAsDataURL(file);
+  });
+
+  const payload = await decodeImageUrl(dataUrl);
+  if (!payload) {
+    setText("totp-status", "no QR code found in that image");
+    await remember("no QR code found in that authenticator image", "warn");
+    return;
+  }
+  await applyTotp(payload, file.name ? `QR \u00b7 ${file.name}` : "QR");
+}
+
+async function checkTwoStep() {
+  const key = state.keys.find((entry) => entry.status === "ok") || state.keys[0];
+  if (!key) {
+    await remember("load a key before checking 2SV", "warn");
+    return;
+  }
+
+  const email =
+    $("totp-email").value.trim().toLowerCase() ||
+    state.totp?.email ||
+    key.admin ||
+    defaultTotpEmail();
+  if (!email) {
+    await remember("set the admin email in the Authenticator setup card", "warn");
+    return;
+  }
+
+  try {
+    const status = await admin.twoStepStatus(key, email);
+    const label = `${status.email}: enrolled=${status.enrolled} enforced=${status.enforced}`;
+    setText("twofa-status", label);
+    await remember(label, status.enrolled && status.enforced ? "ok" : "warn");
+    await refreshChecklist();
+  } catch (error) {
+    setText("twofa-status", error.message || String(error));
+    await remember(`2SV check: ${error.message || error}`, "error");
+  }
+}
+
 // -------------------------------------------------------------------- duckdns
 
 async function saveDuck(fields) {
@@ -1402,6 +1588,47 @@ async function refreshChecklist() {
   mark("key", Boolean(key));
   mark("auth", liveKey ? true : key ? false : null);
   mark("identity", state.identities.length > 0 ? true : null);
+
+  let twofa = null;
+  if (liveKey) {
+    const email =
+      state.totp?.email ||
+      liveKey.admin ||
+      (liveKey.domain ? `admin@${liveKey.domain}` : null);
+    if (email) {
+      try {
+        const status = await admin.twoStepStatus(liveKey, email);
+        twofa = status.enrolled && status.enforced;
+        setText(
+          "twofa-status",
+          `${status.email}: enrolled=${status.enrolled} enforced=${status.enforced}`
+        );
+        if (!twofa) {
+          await remember(
+            `${status.email}: 2SV ${status.enrolled ? "enrolled" : "not enrolled"} \u00b7 ${
+              status.enforced ? "enforced" : "not enforced"
+            }`,
+            "warn"
+          );
+        }
+      } catch (error) {
+        setText("twofa-status", `${email}: ${error.message || error}`);
+        if (error.status === 403) {
+          await remember(
+            `${email}: this key cannot read 2SV status \u2014 re-consent with admin.directory.user`,
+            "info"
+          );
+        } else if (error.status !== 404) {
+          await remember(`2SV check failed: ${error.message || error}`, "warn");
+        }
+      }
+    } else {
+      setText("twofa-status", "set the admin email in Authenticator setup");
+    }
+  } else {
+    setText("twofa-status", "2SV not checked");
+  }
+  mark("twofa", twofa);
 
   if (!named?.domain) {
     mark("dns", null);
@@ -1737,7 +1964,7 @@ function wire() {
       return;
     }
 
-    if (/^(https?:\/\/|sms:|smsto:)/i.test(text)) {
+    if (/^(https?:\/\/|sms:|smsto:|otpauth:\/\/)/i.test(text)) {
       event.preventDefault();
       await handlePayload(text, "pasted");
       return;
@@ -1795,6 +2022,49 @@ function wire() {
   $("duck-check").addEventListener("click", () => duckCheck());
   $("duck-clear").addEventListener("click", () => duckClear());
 
+  $("totp-save").addEventListener("click", () => saveTotp());
+  $("totp-check").addEventListener("click", () => checkTwoStep());
+  $("totp-clear").addEventListener("click", () => clearTotp());
+  $("totp-qr").addEventListener("click", () => $("totp-qr-file").click());
+  $("totp-qr-file").addEventListener("change", async (event) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      try {
+        await decodeTotpFile(file);
+      } catch (error) {
+        await remember(error.message || String(error), "error");
+      }
+    }
+    event.target.value = "";
+  });
+
+  const totpDrop = $("totp-drop");
+  if (totpDrop) {
+    totpDrop.addEventListener("click", () => $("totp-qr-file").click());
+    totpDrop.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        $("totp-qr-file").click();
+      }
+    });
+    totpDrop.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      totpDrop.classList.add("over");
+    });
+    totpDrop.addEventListener("dragleave", () => totpDrop.classList.remove("over"));
+    totpDrop.addEventListener("drop", async (event) => {
+      event.preventDefault();
+      totpDrop.classList.remove("over");
+      const file = event.dataTransfer?.files?.[0];
+      if (!file) return;
+      try {
+        await decodeTotpFile(file);
+      } catch (error) {
+        await remember(error.message || String(error), "error");
+      }
+    });
+  }
+
   api.runtime.onMessage.addListener((message) => {
     if (message?.type === "log-line" && message.line) {
       appendLogNode(message.line);
@@ -1820,6 +2090,7 @@ function wire() {
       renderAccounts();
       renderQueue();
       renderPhone();
+      renderTotp();
     }
   });
 }
@@ -1832,7 +2103,10 @@ async function boot() {
   renderConsoleLog();
   render();
 
-  setInterval(() => setText("console-clock", new Date().toTimeString().slice(0, 8)), 1000);
+  setInterval(() => {
+    setText("console-clock", new Date().toTimeString().slice(0, 8));
+    updateTotp();
+  }, 1000);
   setText("console-clock", new Date().toTimeString().slice(0, 8));
 
   const granted = await hasPermissions();

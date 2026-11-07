@@ -265,6 +265,7 @@
                 <li data-check="auth"><i></i><span>The key authenticates</span><em>waiting</em></li>
                 <li data-check="dns"><i></i><span>The domain has a Google TXT record</span><em>waiting</em></li>
                 <li data-check="verified"><i></i><span>Google reports the domain as verified</span><em>waiting</em></li>
+                <li data-check="twofa"><i></i><span>Admin 2SV is enrolled and enforced</span><em>waiting</em></li>
                 <li data-check="identity"><i></i><span>An identity exists</span><em>waiting</em></li>
               </ul>
             </div>
@@ -375,8 +376,85 @@
               </p>
             </details>
 
+            <details class="card" open>
+              <summary><h2>3 &middot; Authenticator setup</h2></summary>
+              <p class="note">
+                Backup verification codes are only issued once 2-Step Verification exists. Enable it
+                on the admin first, then enforce it for the tenant. The authenticator below is local:
+                it turns the setup secret into the current 6-digit code, so no phone or app is
+                needed.
+              </p>
+              <ol class="steps">
+                <li>
+                  Sign in as the tenant admin and open
+                  <a href="https://myaccount.google.com/signinoptions/two-step-verification" target="_blank" rel="noopener noreferrer">
+                    myaccount.google.com &rarr; Security &rarr; 2-Step Verification
+                  </a>.
+                </li>
+                <li>
+                  Choose <b>Authenticator app</b> (not SMS), then click <b>Can't scan it?</b> and
+                  copy the secret key. Paste it below and use the live code to finish Google's
+                  setup.
+                </li>
+                <li>
+                  Open
+                  <a href="https://admin.google.com/ac/security/2sv" target="_blank" rel="noopener noreferrer">
+                    Admin console &rarr; Security &rarr; 2-Step Verification
+                  </a>,
+                  set <b>Enforcement</b> to <b>On</b> for the org or the OU that holds the
+                  identities, and allow enough time for enrollment. Enroll the admin first or
+                  Google can lock the tenant out.
+                </li>
+                <li>
+                  Once the admin is enrolled and enforcement is on, the run mints a fresh backup
+                  code per identity with <span class="mono">verificationCodes.generate</span>. If
+                  minting returns <span class="mono">400</span> or <span class="mono">412</span>,
+                  the user is not enrolled or the tenant hit the abuse cap.
+                </li>
+              </ol>
+              <div class="controls">
+                <label class="field">
+                  <span>Admin email</span>
+                  <input id="totp-email" placeholder="admin@example.duckdns.org" />
+                </label>
+                <label class="field">
+                  <span>Authenticator secret</span>
+                  <input
+                    id="totp-secret"
+                    type="password"
+                    autocomplete="off"
+                    placeholder="JBSWY3DPEHPK3PXP or otpauth://..."
+                  />
+                </label>
+              </div>
+              <div class="buttons">
+                <button id="totp-save" class="btn primary">Save secret</button>
+                <button id="totp-qr" class="btn ghost">Decode QR image</button>
+                <button id="totp-check" class="btn ghost">Check admin 2SV</button>
+                <button id="totp-clear" class="btn danger">Clear</button>
+                <input id="totp-qr-file" type="file" accept="image/*" hidden />
+              </div>
+              <div class="drop" id="totp-drop" role="button" tabindex="0">
+                Drop the authenticator QR image here, or paste the secret above
+              </div>
+              <div class="totp-live">
+                <div class="card-head">
+                  <h2>Live code</h2>
+                  <button class="btn tiny ghost copy" data-copy-target="totp-code">Copy</button>
+                </div>
+                <div id="totp-code" class="bigvalue mono">------</div>
+                <div id="totp-countdown" class="hint">&mdash;</div>
+              </div>
+              <p class="note mono" id="totp-status">no secret saved</p>
+              <p class="note mono" id="twofa-status">2SV not checked</p>
+              <p class="note">
+                The secret is stored in this browser's extension storage. It is as sensitive as the
+                admin password.
+              </p>
+            </details>
+
             <details class="card">
-              <summary><h2>3 &middot; Create the key</h2></summary>
+              <summary><h2>4 &middot; Create the key</h2></summary>
               <ol class="steps">
                 <li>
                   Create a project inside the tenant's organization at
@@ -419,7 +497,7 @@
             </details>
 
             <details class="card">
-              <summary><h2>4 &middot; Know the limits</h2></summary>
+              <summary><h2>5 &middot; Know the limits</h2></summary>
               <ul class="steps">
                 <li>50 identities per key, roughly 45 before Google's abuse filter answers <span class="mono">412</span>. That flag is permanent per tenant &mdash; deleting users does not clear it.</li>
                 <li>Creation is capped at 10 users per domain per second. The extension paces itself at ~8/s.</li>

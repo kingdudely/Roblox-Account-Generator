@@ -235,6 +235,20 @@ export async function countUsers(key, domain) {
   return total;
 }
 
+export async function twoStepStatus(key, email) {
+  const data = await call(
+    key,
+    `/users/${encodeURIComponent(email)}?projection=full`
+  );
+  return {
+    email: data?.primaryEmail || email,
+    enrolled: Boolean(data?.isEnrolledIn2Sv),
+    enforced: Boolean(data?.isEnforcedIn2Sv),
+    suspended: Boolean(data?.suspended),
+    archived: Boolean(data?.archived),
+  };
+}
+
 export async function insertUser(key, identity) {
   const body = {
     primaryEmail: identity.email,

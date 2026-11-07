@@ -21,6 +21,7 @@ export function emptyState() {
     log: [],
     phone: { number: "", body: "", payload: "", source: "" },
     duckdns: { token: "", subdomain: "", value: "", answer: "", checked_at: null },
+    totp: { email: "", secret: "", algorithm: "SHA1", digits: 6, period: 30, issuer: "", label: "" },
   };
 }
 
@@ -33,6 +34,7 @@ function normalise(state) {
     run: { ...base.run, ...(state.run || {}) },
     phone: { ...base.phone, ...(state.phone || {}) },
     duckdns: { ...base.duckdns, ...(state.duckdns || {}) },
+    totp: { ...base.totp, ...(state.totp || {}) },
   };
 }
 

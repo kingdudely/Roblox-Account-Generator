@@ -715,6 +715,24 @@ input[type="checkbox"] {
   align-items: center;
 }
 
+.totp-live {
+  margin: 4px 0 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+  background: #0a0e13;
+}
+
+.totp-live .card-head {
+  margin-bottom: 8px;
+}
+
+.totp-live .bigvalue {
+  font-size: 26px;
+  letter-spacing: 0.16em;
+  justify-content: center;
+}
+
 .payload {
   margin-top: 10px;
   color: var(--muted-2);
