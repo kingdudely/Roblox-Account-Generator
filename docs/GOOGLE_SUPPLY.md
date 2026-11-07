@@ -7,6 +7,9 @@ Short answer: **the Android account manager is the only free surface that
 substitutes device trust for a phone**, and even it is tightening. Every web
 surface measured tonight ends in the same gate.
 
+> Research probes from the pre-SSO tree live under `legacy/tools/`; the current
+> SSO helpers are in `tools/`.
+
 ## What the web flow actually does now
 
 Desktop signup, run live from this connection and recorded to

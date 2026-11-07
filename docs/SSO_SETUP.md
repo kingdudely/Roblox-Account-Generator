@@ -1,9 +1,9 @@
 # Google SSO path — from a blank machine to 50 Roblox accounts
 
-> **Historical.** This was written for the per-tool layout. Commands below name
-> files that no longer exist; [`README.md`](../README.md) is the current setup and
-> `main.py` is the only entry point. The measurements, failure modes and console
-> evidence in this document are still accurate.
+> **Historical.** This was written for the per-tool layout. SSO helpers live in
+> `tools/`; pre-SSO research probes live in `legacy/tools/`. [`README.md`](../README.md)
+> is the current setup and `main.py` is the main entry point. The measurements,
+> failure modes and console evidence in this document are still accurate.
 
 This is the path that skips the captcha entirely. Not solved, not bypassed —
 **never asked**. Roblox's "Sign in with Google" flow creates an account from a
