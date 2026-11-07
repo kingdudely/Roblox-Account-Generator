@@ -1,0 +1,288 @@
+// language: JavaScript, file: lib/admin.js
+// Admin SDK over HTTPS. Nothing here touches a browser tab.
+
+import { Semaphore, sleep } from "./api.js";
+
+const TOKEN_URL = "https://oauth2.googleapis.com/token";
+const ADMIN = "https://admin.googleapis.com/admin/directory/v1";
+const JWT_GRANT = "urn:ietf:params:oauth:grant-type:jwt-bearer";
+
+const tokenCache = new Map();
+const globalGate = new Semaphore(8);
+const domainGates = new Map();
+
+export class AdminError extends Error {
+  constructor(message, { status = 0, reason = "", payload = null } = {}) {
+    super(message);
+    this.name = "AdminError";
+    this.status = status;
+    this.reason = reason;
+    this.payload = payload;
+  }
+
+  get blocked() {
+    return this.status === 412 || this.reason === "conditionNotMet";
+  }
+
+  get quota() {
+    return (
+      this.status === 429 ||
+      this.reason === "quotaExceeded" ||
+      this.reason === "rateLimitExceeded" ||
+      this.reason === "userRateLimitExceeded"
+    );
+  }
+}
+
+async function parseError(response) {
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch (_) {
+    payload = null;
+  }
+  const error = payload?.error || {};
+  const first = Array.isArray(error.errors) ? error.errors[0] : null;
+  const reason = first?.reason || error.status || "";
+  const message = error.message || first?.message || `HTTP ${response.status}`;
+  return new AdminError(message, { status: response.status, reason, payload });
+}
+
+// Google documents 10 user inserts per domain per second. Staying at ~8/s
+// leaves headroom for the retries a real batch always produces.
+function domainGate(domain) {
+  const id = domain || "default";
+  if (!domainGates.has(id)) {
+    domainGates.set(id, { chain: Promise.resolve(), last: 0 });
+  }
+  return domainGates.get(id);
+}
+
+async function pace(domain, spacing = 120) {
+  const gate = domainGate(domain);
+  const turn = gate.chain.then(async () => {
+    const wait = Math.max(0, gate.last + spacing - Date.now());
+    if (wait) await sleep(wait);
+    gate.last = Date.now();
+  });
+  gate.chain = turn.catch(() => {});
+  await turn;
+}
+
+function base64url(input) {
+  const bytes =
+    typeof input === "string" ? new TextEncoder().encode(input) : new Uint8Array(input);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function pemToBuffer(pem) {
+  const body = String(pem)
+    .replace(/-----BEGIN PRIVATE KEY-----/, "")
+    .replace(/-----END PRIVATE KEY-----/, "")
+    .replace(/\s+/g, "");
+  const binary = atob(body);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
+async function serviceAssertion(key) {
+  const header = { alg: "RS256", typ: "JWT" };
+  const now = Math.floor(Date.now() / 1000);
+  const claims = {
+    iss: key.client_email,
+    scope: (key.scopes || []).join(" "),
+    aud: TOKEN_URL,
+    iat: now,
+    exp: now + 3600,
+  };
+  if (key.admin) claims.sub = key.admin;
+
+  const unsigned = `${base64url(JSON.stringify(header))}.${base64url(JSON.stringify(claims))}`;
+  const cryptoKey = await crypto.subtle.importKey(
+    "pkcs8",
+    pemToBuffer(key.private_key),
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign(
+    "RSASSA-PKCS1-v1_5",
+    cryptoKey,
+    new TextEncoder().encode(unsigned)
+  );
+  return `${unsigned}.${base64url(signature)}`;
+}
+
+export async function accessToken(key, force = false) {
+  const cached = tokenCache.get(key.id);
+  if (!force && cached && cached.expires > Date.now() + 60_000) {
+    return cached.token;
+  }
+
+  const body = new URLSearchParams();
+  if (key.kind === "service_account") {
+    body.set("grant_type", JWT_GRANT);
+    body.set("assertion", await serviceAssertion(key));
+  } else {
+    body.set("grant_type", "refresh_token");
+    body.set("client_id", key.client_id);
+    body.set("client_secret", key.client_secret);
+    body.set("refresh_token", key.refresh_token);
+  }
+
+  const response = await fetch(TOKEN_URL, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  });
+
+  if (!response.ok) {
+    const failure = await parseError(response);
+    throw new AdminError(
+      `token refresh failed (${failure.reason || failure.status}): ${failure.message}`,
+      failure
+    );
+  }
+
+  const data = await response.json();
+  const ttl = Number(data.expires_in || 3600) * 1000;
+  tokenCache.set(key.id, { token: data.access_token, expires: Date.now() + ttl });
+  return data.access_token;
+}
+
+async function call(key, path, { method = "GET", body = null, spacing = 0, retries = 2 } = {}) {
+  if (spacing) await pace(key.domain, spacing);
+
+  return globalGate.run(async () => {
+    let attempt = 0;
+    for (;;) {
+      const token = await accessToken(key, attempt > 0);
+      const response = await fetch(`${ADMIN}${path}`, {
+        method,
+        headers: {
+          authorization: `Bearer ${token}`,
+          ...(body ? { "content-type": "application/json" } : {}),
+        },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      });
+
+      if (response.ok) {
+        if (response.status === 204) return null;
+        const text = await response.text();
+        return text ? JSON.parse(text) : null;
+      }
+
+      const error = await parseError(response);
+      if (error.status === 401 && attempt < 1) {
+        attempt += 1;
+        continue;
+      }
+      if (error.quota && attempt < retries) {
+        attempt += 1;
+        await sleep(600 * attempt + Math.random() * 400);
+        continue;
+      }
+      throw error;
+    }
+  });
+}
+
+export async function whoAmI(key) {
+  const data = await call(key, "/users?customer=my_customer&maxResults=1");
+  const user = data?.users?.[0];
+  return {
+    email: user?.primaryEmail || null,
+    domain: user?.primaryEmail ? user.primaryEmail.split("@").pop() : null,
+    total: data?.users?.length || 0,
+  };
+}
+
+export async function detectDomain(key) {
+  try {
+    const me = await whoAmI(key);
+    if (me.domain) return me.domain;
+  } catch (_) {
+    // fall through to the customer record
+  }
+  try {
+    const customer = await call(key, "/customers/my_customer");
+    if (customer?.customerDomain) return customer.customerDomain;
+  } catch (_) {
+    // scope may not allow it
+  }
+  return key.domain || null;
+}
+
+export async function countUsers(key, domain) {
+  let total = 0;
+  let page = null;
+  let pages = 0;
+  do {
+    const query = new URLSearchParams({
+      customer: "my_customer",
+      maxResults: "200",
+      ...(domain ? { domain } : {}),
+      ...(page ? { pageToken: page } : {}),
+    });
+    const data = await call(key, `/users?${query.toString()}`);
+    total += data?.users?.length || 0;
+    page = data?.nextPageToken || null;
+    pages += 1;
+  } while (page && pages < 5);
+  return total;
+}
+
+export async function insertUser(key, identity) {
+  const body = {
+    primaryEmail: identity.email,
+    name: { givenName: identity.first, familyName: identity.last },
+    password: identity.password,
+    changePasswordAtNextLogin: false,
+  };
+  try {
+    return await call(key, "/users", { method: "POST", body, spacing: 120 });
+  } catch (error) {
+    if (error.status === 409 || error.reason === "duplicate") {
+      await call(key, `/users/${encodeURIComponent(identity.email)}`, {
+        method: "PUT",
+        body: { password: identity.password, changePasswordAtNextLogin: false },
+      });
+      return { reset: true };
+    }
+    throw error;
+  }
+}
+
+export async function deleteUser(key, email) {
+  try {
+    await call(key, `/users/${encodeURIComponent(email)}`, { method: "DELETE" });
+    return { deleted: true };
+  } catch (error) {
+    if (error.status === 404) return { deleted: false, missing: true };
+    throw error;
+  }
+}
+
+export async function domainStatus(key, domain) {
+  const data = await call(key, "/customer/my_customer/domains");
+  const list = data?.domains || [];
+  const wanted = String(domain || "").toLowerCase();
+  const target = list.find((entry) => (entry.domainName || "").toLowerCase() === wanted);
+  return {
+    present: Boolean(target),
+    verified: Boolean(target?.verified),
+    primary: Boolean(target?.isPrimary),
+    domains: list.map((entry) => entry.domainName).filter(Boolean),
+  };
+}
+
+export async function mintCodes(key, email) {
+  await call(key, `/users/${encodeURIComponent(email)}/verificationCodes`, {
+    method: "POST",
+  });
+  const data = await call(key, `/users/${encodeURIComponent(email)}/verificationCodes`);
+  return (data?.items || []).map((item) => item.verificationCode);
+}

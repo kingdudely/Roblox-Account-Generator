@@ -1,0 +1,6 @@
+-r ../requirements.txt
+
+# legacy vision / auto-captcha (optional; manual Build mode does not need these)
+numpy>=1.26
+opencv-python-headless>=4.10
+Pillow>=10.2

@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Roblox Alt Creator</title>
+    <link rel="stylesheet" href="runner.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="mark" aria-hidden="true"></span>
+          <div class="brand-text">
+            <h1>Roblox Alt Creator</h1>
+            <p>Cloud Identity key &rarr; identity &rarr; Roblox account</p>
+          </div>
+        </div>
+        <div class="topmeta">
+          <button id="grant" class="btn tiny ghost" hidden>Grant site access</button>
+          <span id="engine" class="chip">engine</span>
+          <span id="status" class="chip idle" data-state="idle">idle</span>
+        </div>
+      </header>
+
+      <div class="layout">
+        <section class="work">
+          <nav class="tabs" role="tablist">
+            <button class="tab active" data-tab="run" role="tab">Run</button>
+            <button class="tab" data-tab="keys" role="tab">Keys</button>
+            <button class="tab" data-tab="accounts" role="tab">Accounts</button>
+            <button class="tab" data-tab="phone" role="tab">Phone gate</button>
+            <button class="tab" data-tab="setup" role="tab">Setup</button>
+          </nav>
+
+          <!-- RUN ------------------------------------------------------------------>
+          <div class="tabpanel active" id="panel-run">
+            <div class="statrow">
+              <div class="stat">
+                <span id="stat-accounts">0</span>
+                <label>accounts</label>
+              </div>
+              <div class="stat">
+                <span id="stat-ready">0</span>
+                <label>identities ready</label>
+              </div>
+              <div class="stat">
+                <span id="stat-seats">0</span>
+                <label>seats left</label>
+              </div>
+              <div class="stat">
+                <span id="stat-rate">&mdash;</span>
+                <label>per hour</label>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-head">
+                <h2>Batch</h2>
+                <span class="hint" id="batch-hint">add a key first</span>
+              </div>
+              <div class="controls">
+                <label class="field">
+                  <span>Accounts</span>
+                  <input id="count" type="number" min="1" max="200" value="1" />
+                </label>
+                <label class="field">
+                  <span>Lanes</span>
+                  <select id="lanes">
+                    <option value="1">1</option>
+                    <option value="2">2</option>
+                    <option value="3">3</option>
+                    <option value="4">4</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Timeout (s)</span>
+                  <input id="timeout" type="number" min="60" max="900" step="10" value="240" />
+                </label>
+                <label class="field check">
+                  <input id="auto-export" type="checkbox" checked />
+                  <span>Export when done</span>
+                </label>
+              </div>
+              <div class="buttons">
+                <button id="start" class="btn primary">Start</button>
+                <button id="stop" class="btn danger" disabled>Stop</button>
+                <button id="preflight" class="btn ghost">Preflight one</button>
+                <button id="requeue" class="btn ghost">Requeue failed</button>
+              </div>
+              <div class="progress">
+                <div class="bar"><i id="bar-fill"></i></div>
+                <div class="progress-row">
+                  <span id="progress-text">idle</span>
+                  <span id="progress-count" class="mono"></span>
+                </div>
+              </div>
+            </div>
+
+            <div class="card grow">
+              <div class="card-head">
+                <h2>Queue</h2>
+                <span class="hint">per-identity state</span>
+              </div>
+              <div id="queue" class="queue">
+                <p class="empty">nothing queued</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- KEYS ----------------------------------------------------------------->
+          <div class="tabpanel" id="panel-keys">
+            <div class="card">
+              <div class="card-head">
+                <h2>Add keys</h2>
+                <span class="hint">JSON array, JSONL, or one per line</span>
+              </div>
+              <textarea
+                id="key-input"
+                spellcheck="false"
+                placeholder='[{"client_id":"...","client_secret":"...","refresh_token":"..."}]'
+              ></textarea>
+              <div class="drop" id="key-drop">Drop a <b>.json</b> or <b>.txt</b> credential file here</div>
+              <div class="buttons">
+                <button id="add-keys" class="btn primary">Add keys</button>
+                <button id="keys-from-file" class="btn ghost">Choose file</button>
+                <input id="key-file" type="file" accept=".json,.txt,application/json" hidden />
+              </div>
+              <p class="note">
+                Paste only <span class="mono">client_id</span>,
+                <span class="mono">client_secret</span> and
+                <span class="mono">refresh_token</span> &mdash; the domain is detected from the
+                tenant. One key holds 50 seats. Credentials are stored locally in this extension,
+                unencrypted.
+              </p>
+            </div>
+
+            <div class="card grow">
+              <div class="card-head">
+                <h2>Tenants</h2>
+                <span class="hint" id="key-count">0 keys</span>
+              </div>
+              <div id="key-list" class="keylist">
+                <p class="empty">no keys yet</p>
+              </div>
+            </div>
+
+            <details class="card">
+              <summary>
+                <h2>Create a key here</h2>
+                <span class="hint">one consent screen, done</span>
+              </summary>
+              <p class="note">
+                Paste the JSON from a <b>Desktop app</b> OAuth client, then approve the consent tab as the
+                tenant admin. The refresh token is stored locally; the domain is detected from the tenant.
+              </p>
+              <textarea
+                id="client-input"
+                spellcheck="false"
+                placeholder='{"installed":{"client_id":"...","client_secret":"..."}}'
+              ></textarea>
+              <div class="controls">
+                <label class="field">
+                  <span>Domain (optional)</span>
+                  <input id="client-domain" placeholder="detected from the tenant" />
+                </label>
+                <label class="field">
+                  <span>Admin (optional)</span>
+                  <input id="client-admin" placeholder="admin@example.duckdns.org" />
+                </label>
+              </div>
+              <div class="buttons">
+                <button id="authorize" class="btn primary">Authorize key</button>
+              </div>
+            </details>
+          </div>
+
+          <!-- ACCOUNTS ------------------------------------------------------------->
+          <div class="tabpanel" id="panel-accounts">
+            <div class="card">
+              <div class="card-head">
+                <h2>Output</h2>
+                <span class="hint" id="account-count">0 accounts</span>
+              </div>
+              <div class="buttons">
+                <button id="export" class="btn primary">Export .txt</button>
+                <button id="copy-all" class="btn ghost">Copy all</button>
+                <button id="wipe" class="btn danger">Wipe records</button>
+              </div>
+              <p class="note">
+                Every account is written to extension storage the moment its cookie lands, so closing
+                this tab or stopping a run loses nothing. Export is a mirror, not the record.
+                The stored password is the Google identity's &mdash; the Roblox account signs in with
+                <b>Sign in with Google</b>.
+              </p>
+            </div>
+
+            <div class="card grow">
+              <div class="card-head">
+                <h2>Accounts</h2>
+                <span class="hint">values masked by default</span>
+              </div>
+              <div id="account-list" class="accounts">
+                <p class="empty">none yet</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- PHONE ---------------------------------------------------------------->
+          <div class="tabpanel" id="panel-phone">
+            <div class="card">
+              <div class="card-head">
+                <h2>Phone gate</h2>
+                <span class="hint">directly, or one page behind</span>
+              </div>
+              <p class="note">
+                When signup stops at &ldquo;verify your device&rdquo;, the QR carries either an
+                <span class="mono">sms:</span> link or a link to Google's consent page. Either way this
+                opens it in the background and presses <b>Send SMS</b> for you, then reads the number
+                and message. You do not have to stay on the page.
+              </p>
+              <p class="note">
+                It can read the message, not send it. You still need a line that can text from the
+                number being verified.
+              </p>
+              <div class="buttons">
+                <button id="scan-tab" class="btn primary">Scan Google tab</button>
+                <button id="pick-qr" class="btn ghost">Decode image</button>
+                <input id="qr-file" type="file" accept="image/*" hidden />
+              </div>
+              <div class="drop" id="qr-drop" role="button" tabindex="0">
+                Paste (<span class="mono">Ctrl+V</span>), drop an image, or drop a link here
+              </div>
+              <p class="note mono" id="phone-source">no scan yet</p>
+            </div>
+
+            <div class="card">
+              <div class="card-head">
+                <h2>Number</h2>
+                <button class="btn tiny ghost copy" data-copy-target="phone-number">Copy</button>
+              </div>
+              <div id="phone-number" class="bigvalue mono">&mdash;</div>
+            </div>
+
+            <div class="card grow">
+              <div class="card-head">
+                <h2>Message</h2>
+                <button class="btn tiny ghost copy" data-copy-target="phone-body">Copy</button>
+              </div>
+              <div id="phone-body" class="bigvalue mono">&mdash;</div>
+              <div id="phone-payload" class="payload mono"></div>
+            </div>
+          </div>
+
+          <!-- SETUP ---------------------------------------------------------------->
+          <div class="tabpanel" id="panel-setup">
+            <div class="card">
+              <div class="card-head">
+                <h2>Checklist</h2>
+                <button id="recheck" class="btn tiny ghost">Re-check</button>
+              </div>
+              <ul class="checklist" id="checklist">
+                <li data-check="perm"><i></i><span>Site access granted</span><em>waiting</em></li>
+                <li data-check="key"><i></i><span>A key is loaded</span><em>waiting</em></li>
+                <li data-check="auth"><i></i><span>The key authenticates</span><em>waiting</em></li>
+                <li data-check="dns"><i></i><span>The domain has a Google TXT record</span><em>waiting</em></li>
+                <li data-check="verified"><i></i><span>Google reports the domain as verified</span><em>waiting</em></li>
+                <li data-check="identity"><i></i><span>An identity exists</span><em>waiting</em></li>
+              </ul>
+            </div>
+
+            <div class="card">
+              <div class="card-head">
+                <h2>DuckDNS record</h2>
+                <span class="hint">writes the TXT for you</span>
+              </div>
+              <p class="note">
+                When you add the domain in Google Admin it shows a
+                <span class="mono">google-site-verification=&hellip;</span> value. Paste it here with
+                your DuckDNS token; this writes the record through DuckDNS's API and waits until it
+                resolves. DuckDNS has no DNS editor &mdash; the token is the editor.
+              </p>
+              <div class="controls">
+                <label class="field">
+                  <span>DuckDNS token</span>
+                  <input id="duck-token" type="password" autocomplete="off" placeholder="account token" />
+                </label>
+                <label class="field">
+                  <span>Subdomain</span>
+                  <input id="duck-sub" placeholder="farm" />
+                </label>
+              </div>
+              <label class="field block">
+                <span>TXT value</span>
+                <input id="duck-value" placeholder="google-site-verification=..." />
+              </label>
+              <div class="buttons">
+                <button id="duck-write" class="btn primary">Write record</button>
+                <button id="duck-check" class="btn ghost">Check now</button>
+                <button id="duck-clear" class="btn danger">Clear</button>
+              </div>
+              <p class="note mono" id="duck-status">no record written yet</p>
+            </div>
+
+            <details class="card" open>
+              <summary><h2>1 &middot; Get a DuckDNS subdomain</h2></summary>
+              <ol class="steps">
+                <li>
+                  Sign in at
+                  <a href="https://www.duckdns.org" target="_blank" rel="noopener noreferrer">duckdns.org</a>
+                  and add a subdomain.
+                </li>
+                <li>Copy your account token from the same page. One token covers every subdomain.</li>
+                <li>
+                  There is no DNS box in the DuckDNS UI &mdash; TXT records live behind the API. The
+                  card above is that API, so you never touch a dashboard.
+                </li>
+              </ol>
+            </details>
+
+            <details class="card" open>
+              <summary><h2>2 &middot; Create the Cloud Identity account</h2></summary>
+              <ol class="steps">
+                <li>
+                  Open the Cloud Identity Free signup:
+                  <a href="https://workspace.google.com/gcpidentity/signup?sku=identitybasic" target="_blank" rel="noopener noreferrer">
+                    workspace.google.com/gcpidentity/signup
+                  </a>.
+                </li>
+                <li>
+                  <b>About you</b> &mdash; your name and an address you can still read later. It must
+                  <b>not</b> be on the tenant domain; a personal Gmail is what this field is for. It is
+                  only the recovery address.
+                </li>
+                <li><b>About your business</b> &mdash; any company name, and your country.</li>
+                <li>
+                  <b>Your Cloud Identity domain</b> &mdash; enter
+                  <span class="mono">&lt;sub&gt;.duckdns.org</span>. The subdomain must already exist at
+                  <a href="https://www.duckdns.org" target="_blank" rel="noopener noreferrer">duckdns.org</a>.
+                </li>
+                <li>
+                  <b>Create your admin account</b> &mdash; choose a username and password. This creates
+                  <span class="mono">admin@&lt;sub&gt;.duckdns.org</span>. There is no separate Google
+                  account to make first; this is the tenant's first user.
+                </li>
+                <li>
+                  <b>Verify the domain</b> &mdash; Google shows a
+                  <span class="mono">google-site-verification=&hellip;</span> value. Paste it into the
+                  DuckDNS card above, press <b>Write record</b>, then click <b>Verify</b> back in the
+                  signup tab. If Google says it cannot find the record, wait a minute and retry.
+                </li>
+                <li>
+                  Accept the Cloud Identity Agreement. You land in the Google Cloud console with the
+                  tenant live.
+                </li>
+              </ol>
+              <p class="note">
+                If signup stops at a QR instead of a phone field, open the <b>Phone gate</b> tab &mdash;
+                it reads the destination number and the exact message to send. The line must be able to
+                send SMS; receive-only numbers fail.
+              </p>
+              <p class="note">
+                Already have a Workspace tenant? Skip the signup and add the free edition from
+                <a href="https://admin.google.com/ac/billing/catalog" target="_blank" rel="noopener noreferrer">
+                  Billing &rarr; Cloud Identity Free
+                </a>, adding the domain at
+                <a href="https://admin.google.com/ac/domains/manage" target="_blank" rel="noopener noreferrer">
+                  Domains
+                </a>.
+              </p>
+              <p class="note">
+                If Google answers <i>&ldquo;Cloud Identity does not currently support this domain
+                name&rdquo;</i>, use a domain you own at a registrar instead &mdash; every later step
+                is identical.
+              </p>
+            </details>
+
+            <details class="card">
+              <summary><h2>3 &middot; Create the key</h2></summary>
+              <ol class="steps">
+                <li>
+                  Create a project inside the tenant's organization at
+                  <a href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noopener noreferrer">
+                    console.cloud.google.com/projectcreate
+                  </a>.
+                </li>
+                <li>
+                  Enable the Admin SDK:
+                  <a href="https://console.cloud.google.com/apis/library/admin.googleapis.com" target="_blank" rel="noopener noreferrer">
+                    admin.googleapis.com
+                  </a>.
+                </li>
+                <li>
+                  OAuth consent screen &rarr; <b>Internal</b>; add scopes
+                  <span class="mono">admin.directory.user</span>,
+                  <span class="mono">admin.directory.user.security</span> and
+                  <span class="mono">admin.directory.domain.readonly</span>.
+                  <a href="https://console.cloud.google.com/apis/credentials/consent" target="_blank" rel="noopener noreferrer">
+                    Open the consent screen
+                  </a>.
+                </li>
+                <li>
+                  Credentials &rarr; <b>Create credentials</b> &rarr; <b>OAuth client ID</b> &rarr;
+                  <b>Desktop app</b> &rarr; download the JSON.
+                  <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer">
+                    Open credentials
+                  </a>.
+                </li>
+                <li>
+                  Paste that JSON into <b>Keys &rarr; Create a key here</b> and authorize. The domain is
+                  detected afterwards, so you can leave that field blank.
+                </li>
+              </ol>
+              <p class="note">
+                Rather not build a tenant? <b>g_oose</b> and <b>kingdudely</b> on Discord sell ready keys.
+                Ask for <span class="mono">client_id</span>, <span class="mono">client_secret</span> and
+                <span class="mono">refresh_token</span> &mdash; no domain needed.
+              </p>
+            </details>
+
+            <details class="card">
+              <summary><h2>4 &middot; Know the limits</h2></summary>
+              <ul class="steps">
+                <li>50 identities per key, roughly 45 before Google's abuse filter answers <span class="mono">412</span>. That flag is permanent per tenant &mdash; deleting users does not clear it.</li>
+                <li>Creation is capped at 10 users per domain per second. The extension paces itself at ~8/s.</li>
+                <li>One Google identity becomes exactly one Roblox account. There is no unlink.</li>
+                <li>Deleting an identity frees the seat; the address stays reserved for about 20 days.</li>
+                <li>Lanes need Firefox containers. Chrome has one cookie jar per profile, so it runs one lane.</li>
+              </ul>
+            </details>
+          </div>
+        </section>
+
+        <aside class="console">
+          <div class="console-head">
+            <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span class="console-title">console</span>
+            <span class="console-tools">
+              <button id="copy-log" class="icon-btn">copy</button>
+              <button id="clear-log" class="icon-btn">clear</button>
+            </span>
+          </div>
+          <div id="console-body" class="console-body" aria-live="polite"></div>
+          <div class="console-foot">
+            <span id="console-stat">ready</span>
+            <span class="mono" id="console-clock"></span>
+          </div>
+        </aside>
+      </div>
+    </div>
+
+    <script src="lib/jsqr.js"></script>
+    <script type="module" src="runner.js"></script>
+  </body>
+</html>

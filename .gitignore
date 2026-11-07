@@ -1,0 +1,29 @@
+# credentials and live accounts — never commit
+accounts/
+keys.txt
+accounts.txt
+cookie.txt
+profiles/
+proxies*.txt
+proxiesithink.txt
+.env
+*.log
+
+# regenerable / large
+.venv/
+__pycache__/
+*.pyc
+models/
+debug/
+.profiles/
+dist/
+
+# the retired captcha branch — kept locally, never tracked
+archive/
+
+# local scratch
+.freebuff/
+/tmp/
+
+# root-level screenshots (a signup QR is a live token)
+/*.png
