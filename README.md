@@ -51,8 +51,14 @@ The runner opens on install. If it does not, click the toolbar icon and choose
    domain is detected from the tenant, so there is no domain field.
 2. **Setup** — the checklist turns green as each step is proven. The DuckDNS
    card writes the `google-site-verification` TXT record for you if you give it
-   the account token, and the Phone gate card reads the admin signup QR.
-3. **Run** — choose a count, press Start.
+   the account token, and the Phone gate card reads the admin signup QR. Leave
+   tenant-wide 2SV **Enforcement** off: the run mints a backup code per identity
+   through the Admin API and enters it at Google's challenge. Enforcement with
+   no method enrolled is what produces *"Your sign-in settings don't meet your
+   organization's 2-Step Verification policy"*.
+3. **Run** — choose a count, press Start. Each identity gets ten minted codes;
+   they land on the account row (`codes 10`) and in the export as
+   `backup_codes:`.
 
 Accounts are written to extension storage the moment the cookie lands. Export is
 a mirror; closing the tab loses nothing.

@@ -86,6 +86,7 @@
                 <button id="stop" class="btn danger" disabled>Stop</button>
                 <button id="preflight" class="btn ghost">Preflight one</button>
                 <button id="requeue" class="btn ghost">Requeue failed</button>
+                <button id="mint-codes" class="btn ghost">Mint 2SV codes</button>
               </div>
               <div class="progress">
                 <div class="bar"><i id="bar-fill"></i></div>
@@ -204,7 +205,7 @@
                 <li data-check="auth"><i></i><span>The key authenticates</span><em>waiting</em></li>
                 <li data-check="dns"><i></i><span>The domain has a Google TXT record</span><em>waiting</em></li>
                 <li data-check="verified"><i></i><span>Google reports the domain as verified</span><em>waiting</em></li>
-                <li data-check="twofa"><i></i><span>Admin 2SV is enrolled and enforced</span><em>waiting</em></li>
+                <li data-check="twofa"><i></i><span>Admin 2SV is enrolled</span><em>waiting</em></li>
                 <li data-check="identity"><i></i><span>An identity exists</span><em>waiting</em></li>
               </ul>
             </div>
@@ -359,10 +360,11 @@
             <details class="card" open>
               <summary><h2>3 &middot; Authenticator setup</h2></summary>
               <p class="note">
-                Backup verification codes are only issued once 2-Step Verification exists. Enable it
-                on the admin first, then enforce it for the tenant. The authenticator below is local:
-                it turns the setup secret into the current 6-digit code, so no phone or app is
-                needed.
+                The admin needs an enrolled second factor so the tenant is not half-configured. The
+                authenticator below is local: it turns the setup secret into the current 6-digit
+                code, so no phone or app is needed. Per-identity backup codes are minted through
+                the Admin API &mdash; enforcement is not what makes them work, and leaving it on
+                deadlocks every freshly created identity.
               </p>
               <ol class="steps">
                 <li>
@@ -380,16 +382,20 @@
                   Open
                   <a href="https://admin.google.com/ac/security/2sv" target="_blank" rel="noopener noreferrer">
                     Admin console &rarr; Security &rarr; 2-Step Verification
-                  </a>,
-                  set <b>Enforcement</b> to <b>On</b> for the org or the OU that holds the
-                  identities, and allow enough time for enrollment. Enroll the admin first or
-                  Google can lock the tenant out.
+                  </a>
+                  and set <b>Enforcement</b> to <b>Off</b> for the org or the OU that holds the
+                  identities. With enforcement on and no method enrolled, Google answers every
+                  first sign-in with <i>&ldquo;Your sign-in settings don't meet your
+                  organization's 2-Step Verification policy&rdquo;</i> and the account never
+                  reaches the challenge.
                 </li>
                 <li>
-                  Once the admin is enrolled and enforcement is on, the run mints a fresh backup
-                  code per identity with <span class="mono">verificationCodes.generate</span>. If
-                  minting returns <span class="mono">400</span> or <span class="mono">412</span>,
-                  the user is not enrolled or the tenant hit the abuse cap.
+                  The run mints ten one-time codes per identity with
+                  <span class="mono">verificationCodes.generate</span> before opening the Roblox
+                  tab, keeps them on the identity and the account export, and the Google content
+                  script enters one through <b>Try another way &rarr; Enter one of your backup
+                  codes</b>. Codes mint fine with enforcement off. <b>Mint 2SV codes</b> on the Run
+                  tab does the same for identities that already exist.
                 </li>
               </ol>
               <div class="controls">

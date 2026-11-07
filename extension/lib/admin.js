@@ -293,10 +293,37 @@ export async function domainStatus(key, domain) {
   };
 }
 
+// POST .../verificationCodes/generate mints a fresh set of ten and invalidates
+// the previous one. The collection itself has no POST method, which is why the
+// bare .../verificationCodes URL answers 404.
 export async function mintCodes(key, email) {
-  await call(key, `/users/${encodeURIComponent(email)}/verificationCodes`, {
-    method: "POST",
+  const base = `/users/${encodeURIComponent(email)}/verificationCodes`;
+
+  try {
+    await call(key, `${base}/generate`, { method: "POST", spacing: 200 });
+  } catch (error) {
+    // A user that already holds a full set can answer 400 "too many codes";
+    // listing below still returns the valid ones. Anything else is real.
+    if (error.status !== 400) throw error;
+  }
+
+  const data = await call(key, base, { spacing: 200 });
+  const codes = (data?.items || [])
+    .map((item) => item.verificationCode)
+    .filter((code) => typeof code === "string" && code.length);
+
+  if (!codes.length) {
+    throw new AdminError(
+      "Google returned no backup codes — the user is not enrolled in 2SV, or the tenant policy forbids verification codes",
+      { status: 0, reason: "noCodes", payload: data }
+    );
+  }
+  return codes;
+}
+
+export async function listCodes(key, email) {
+  const data = await call(key, `/users/${encodeURIComponent(email)}/verificationCodes`, {
+    spacing: 200,
   });
-  const data = await call(key, `/users/${encodeURIComponent(email)}/verificationCodes`);
-  return (data?.items || []).map((item) => item.verificationCode);
+  return (data?.items || []).map((item) => item.verificationCode).filter(Boolean);
 }

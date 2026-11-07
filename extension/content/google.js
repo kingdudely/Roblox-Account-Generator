@@ -286,6 +286,16 @@
       return;
     }
 
+    // Enforcement on + no enrolled method: the account cannot reach any factor,
+    // so no code can be entered. This is a tenant setting, not a browser issue.
+    if (/2-step verification policy|don.?t meet your organization/i.test(body)) {
+      once(
+        "policy",
+        "tenant 2SV enforcement is blocking this account — set Admin console → Security → Authentication → 2-Step Verification → Enforcement to Off"
+      );
+      return;
+    }
+
     // unknown screen: wait before calling it stuck, most screens are transient
     if (state.stuckUrl !== location.href) {
       state.stuckUrl = location.href;

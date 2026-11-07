@@ -509,6 +509,14 @@ Google accepts one at the challenge screen:
    `GET BACKUP VERIFICATION CODES` → `GENERATE NEW CODES` → **SAVE**
 2. At the challenge: **Try another way → Enter one of your backup codes**
 
+Enforcement has to be **Off** for the OU holding the identities: enforcement
+with no method enrolled is exactly what produces *"Your sign-in settings don't
+meet your organization's 2-Step Verification policy"*, and the account never
+reaches the challenge where a code could be entered. Minting is not gated by
+enforcement, so nothing is lost. The extension mints automatically before each
+identity enters a lane; **Mint 2SV codes** on the Run tab does it for identities
+that already exist.
+
 Or mint them from code, which is the version worth using:
 
 ```bash

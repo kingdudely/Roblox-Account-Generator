@@ -266,6 +266,10 @@ function renderAccounts() {
       smallAction("pass", () => copyText(account.password || "")),
       smallAction("cookie", () => copyText(account.cookie || ""))
     );
+    const codes = Array.isArray(account.backup_codes) ? account.backup_codes : [];
+    if (codes.length) {
+      acts.append(smallAction(`codes ${codes.length}`, () => copyText(codes.join("\n"))));
+    }
     if (account.status === "pending") {
       acts.append(smallAction("finalise", () => finaliseAccount(account)));
     }
@@ -469,12 +473,14 @@ async function copyText(value) {
 }
 
 function accountText(account) {
+  const codes = Array.isArray(account.backup_codes) ? account.backup_codes : [];
   return [
     `username: ${account.username || ""}`,
     `password: ${account.password || ""}`,
     `email: ${account.email || ""}`,
     `user_id: ${account.user_id || ""}`,
     `cookie: ${account.cookie || ""}`,
+    `backup_codes: ${codes.join(", ")}`,
     `status: ${account.status || "live"}`,
     `note: Google SSO - sign in with Google using ${account.email || ""}`,
     `created_at: ${account.created_at || ""}`,
@@ -821,18 +827,91 @@ async function prepareWork(preflight) {
 // ------------------------------------------------------------------- run loop
 
 // A fresh insert can take a few seconds to propagate to the security service.
-async function mintWithRetry(key, email, attempts = 3) {
+async function mintWithRetry(key, email, attempts = 4) {
   let lastError = null;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
       return await admin.mintCodes(key, email);
     } catch (error) {
       lastError = error;
-      if (error.status === 412) break;
-      await sleep(2500 * (attempt + 1));
+      // 412 is the spent-key signal; 403 is the scope/policy signal. Neither
+      // gets better with time.
+      if (error.status === 412 || error.status === 403) break;
+      await sleep(2000 * (attempt + 1));
     }
   }
   throw lastError || new Error("could not mint a backup code");
+}
+
+// The tenant policy that deadlocks a first sign-in, and the switch that fixes
+// it without losing the API path.
+function mintHint(error) {
+  const text = String(error?.message || error || "").toLowerCase();
+  if (error?.status === 403) {
+    return "the key lacks admin.directory.user.security — re-consent the tenant";
+  }
+  if (
+    /2-?step|two-step|policy|not enrolled|verification code|not allowed/.test(text) ||
+    error?.status === 400
+  ) {
+    return "Admin console → Security → Authentication → 2-Step Verification → Enforcement: Off; codes still mint through the API";
+  }
+  if (error?.quota) return "rate limited — rerun this identity later";
+  return "";
+}
+
+// Explicit button for identities that already exist from an earlier run: mint
+// the code now instead of waiting for the next batch to reach them.
+async function mintReadyCodes() {
+  if (running) {
+    await remember("a batch is running — each identity mints its own code", "warn");
+    return;
+  }
+
+  state = await load();
+  const key =
+    state.keys.find((entry) => entry.status === "ok" && entry.domain) ||
+    state.keys.find((entry) => entry.status === "ok");
+  if (!key) {
+    await remember("no authenticated key — check a tenant first", "warn");
+    return;
+  }
+
+  const ready = state.identities.filter((identity) => identity.status === "ready");
+  if (!ready.length) {
+    await remember("no ready identities — run once so the accounts exist", "warn");
+    return;
+  }
+
+  await remember(`minting 2SV codes for ${ready.length} identity(ies)`, "step");
+  let minted = 0;
+  let failed = 0;
+
+  for (const identity of ready) {
+    if (identity.codes?.length) continue;
+    try {
+      const codes = await mintWithRetry(key, identity.email);
+      await mutate((draft) => {
+        const row = draft.identities.find((entry) => entry.id === identity.id);
+        if (row) row.codes = codes;
+      });
+      minted += 1;
+    } catch (error) {
+      failed += 1;
+      const hint = mintHint(error);
+      await remember(
+        `${identity.email}: ${error.message || error}${hint ? ` — ${hint}` : ""}`,
+        "warn"
+      );
+      if (hint) break;
+    }
+  }
+
+  await refresh();
+  await remember(
+    `${minted} identity(ies) minted${failed ? `, ${failed} failed` : ""}`,
+    minted ? "ok" : "warn"
+  );
 }
 
 async function start({ preflight = false } = {}) {
@@ -937,21 +1016,26 @@ async function runBatch(queue, preflight) {
       await remember(`[lane ${laneIndex + 1}] ${identity.email}`, "step");
 
       try {
-        let provisional = null;
-        // Always mint a fresh set: generating invalidates the previous one, so a
-        // requeued identity can never present a burned code.
-        try {
-          const codes = await mintWithRetry(key, identity.email);
-          identity.codes = codes;
-          await mutate((draft) => {
-            const row = draft.identities.find((entry) => entry.id === identity.id);
-            if (row) row.codes = codes;
-          });
-          await remember(`${identity.email}: ${codes.length} backup code(s) minted`, "info");
-        } catch (error) {
-          await remember(`${identity.email}: backup code mint failed (${error.message || error})`, "warn");
+        // A first sign-in from a fresh identity is a risk challenge; the only
+        // factor that beats it without a phone is a backup code. Without one
+        // Google deadlocks on the tenant's 2SV policy, so mint before the tab
+        // opens and abort this identity if minting fails.
+        if (!identity.codes?.length) {
+          try {
+            const codes = await mintWithRetry(key, identity.email);
+            identity.codes = codes;
+            await mutate((draft) => {
+              const row = draft.identities.find((entry) => entry.id === identity.id);
+              if (row) row.codes = codes;
+            });
+            await remember(`${identity.email}: ${codes.length} backup code(s) minted`, "info");
+          } catch (error) {
+            error.mint = true;
+            throw error;
+          }
         }
 
+        let provisional = null;
         const result = await withTimeout(
           runIdentity({
             identity,
@@ -972,6 +1056,7 @@ async function runBatch(queue, preflight) {
                 display_name: null,
                 cookie,
                 status: "pending",
+                backup_codes: identity.codes || [],
                 tab_id: null,
                 store_id: storeId || null,
                 created_at: new Date().toISOString(),
@@ -1002,6 +1087,7 @@ async function runBatch(queue, preflight) {
           display_name: result.session?.name || null,
           cookie: result.cookie,
           status: live ? "live" : "pending",
+          backup_codes: identity.codes || [],
           tab_id: result.keepTabId || null,
           store_id: storeId || null,
           created_at: provisional?.created_at || new Date().toISOString(),
@@ -1034,14 +1120,19 @@ async function runBatch(queue, preflight) {
       } catch (error) {
         consecutive += 1;
         const stopped = String(error.message || error).includes("stopped");
+        const detail = String(error.message || error);
+        const hint = stopped || !error.mint ? "" : mintHint(error);
         await mutate((draft) => {
           const row = draft.identities.find((entry) => entry.id === identity.id);
           if (row) {
             row.status = stopped ? "ready" : "failed";
-            row.error = stopped ? null : String(error.message || error);
+            row.error = stopped ? null : `${detail}${hint ? ` — ${hint}` : ""}`;
           }
         });
-        if (!stopped) await remember(`${identity.email}: ${error.message || error}`, "error");
+        if (!stopped) {
+          await remember(`${identity.email}: ${detail}`, "error");
+          if (hint) await remember(hint, "warn");
+        }
       }
 
       lastProgress.done += 1;
@@ -1523,7 +1614,13 @@ async function checkTwoStep() {
     const status = await admin.twoStepStatus(key, email);
     const label = `${status.email}: enrolled=${status.enrolled} enforced=${status.enforced}`;
     setText("twofa-status", label);
-    await remember(label, status.enrolled && status.enforced ? "ok" : "warn");
+    await remember(label, status.enrolled ? "ok" : "warn");
+    if (status.enforced) {
+      await remember(
+        "org 2SV enforcement is on — fresh identities deadlock at first sign-in; set Enforcement to Off (backup codes still mint through the API)",
+        "warn"
+      );
+    }
     await refreshChecklist();
   } catch (error) {
     setText("twofa-status", error.message || String(error));
@@ -1667,16 +1764,19 @@ async function refreshChecklist() {
     if (email) {
       try {
         const status = await admin.twoStepStatus(liveKey, email);
-        twofa = status.enrolled && status.enforced;
+        twofa = status.enrolled;
         setText(
           "twofa-status",
           `${status.email}: enrolled=${status.enrolled} enforced=${status.enforced}`
         );
-        if (!twofa) {
+        if (status.enforced) {
           await remember(
-            `${status.email}: 2SV ${status.enrolled ? "enrolled" : "not enrolled"} \u00b7 ${
-              status.enforced ? "enforced" : "not enforced"
-            }`,
+            `${status.email}: org 2SV enforcement is on \u2014 fresh identities deadlock at first sign-in; set Enforcement to Off (codes still mint through the API)`,
+            "warn"
+          );
+        } else if (!status.enrolled) {
+          await remember(
+            `${status.email}: 2SV not enrolled \u2014 save the authenticator secret and finish Google's setup`,
             "warn"
           );
         }
@@ -1763,6 +1863,9 @@ function wire() {
 
   $("start").addEventListener("click", () => start({ preflight: false }));
   $("preflight").addEventListener("click", () => start({ preflight: true }));
+  $("mint-codes").addEventListener("click", () => mintReadyCodes().catch(async (error) => {
+    await remember(error.message || String(error), "error");
+  }));
   $("requeue").addEventListener("click", async () => {
     let count = 0;
     await mutate((draft) => {
