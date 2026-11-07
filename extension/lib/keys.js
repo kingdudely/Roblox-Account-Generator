@@ -30,19 +30,25 @@ export function normaliseKey(raw, source = "inline") {
     throw new KeyError("credential is not a JSON object", source);
   }
 
-  const kind = raw.type === "service_account" ? "service_account" : "oauth";
+  // A file straight from the Cloud console arrives wrapped:
+  // {"installed":{...}} for Desktop, {"web":{...}} for Web.
+  const body = raw.installed || raw.web || raw;
+  const type = body.type || raw.type;
+  const kind = type === "service_account" ? "service_account" : "oauth";
+
   const key = {
     id: uid("key"),
     kind,
-    domain: (raw.domain || "").trim().toLowerCase() || null,
-    admin: (raw.admin || "").trim().toLowerCase() || null,
-    client_id: raw.client_id || null,
-    client_secret: raw.client_secret || null,
-    refresh_token: raw.refresh_token || null,
-    client_email: raw.client_email || null,
-    private_key: raw.private_key || null,
-    token_uri: raw.token_uri || "https://oauth2.googleapis.com/token",
-    scopes: raw.scopes || SCOPES,
+    domain: (body.domain || raw.domain || "").trim().toLowerCase() || null,
+    admin: (body.admin || raw.admin || "").trim().toLowerCase() || null,
+    client_id: body.client_id || null,
+    client_secret: body.client_secret || null,
+    refresh_token: body.refresh_token || null,
+    client_email: body.client_email || null,
+    private_key: body.private_key || null,
+    token_uri: body.token_uri || "https://oauth2.googleapis.com/token",
+    scopes: body.scopes || SCOPES,
+    project_id: body.project_id || null,
     label: "",
     status: "new",
     message: "",
@@ -51,9 +57,9 @@ export function normaliseKey(raw, source = "inline") {
   };
 
   if (kind === "oauth") {
-    if (!key.client_id || !key.client_secret || !key.refresh_token) {
+    if (!key.client_id || !key.client_secret) {
       throw new KeyError(
-        "OAuth credential needs client_id, client_secret and refresh_token",
+        "OAuth client needs client_id and client_secret — drop the client_secret_*.json from the console",
         source
       );
     }
@@ -68,10 +74,21 @@ export function normaliseKey(raw, source = "inline") {
     key.admin = `admin@${key.domain}`;
   }
 
+  // A bare client is a valid tenant stub: it becomes usable after one consent
+  // run, which swaps a refresh token into the same entry.
+  key.needs_consent = kind === "oauth" && !key.refresh_token;
+  if (key.needs_consent) {
+    key.status = "client";
+    key.message = "authorize once to mint a refresh token";
+  }
+
   key.fingerprint = fingerprint(
-    `${key.client_id || key.client_email}|${key.refresh_token || key.private_key.slice(0, 64)}`
+    `${key.client_id || key.client_email}|${key.refresh_token || (key.private_key || "").slice(0, 64)}`
   );
-  key.label = key.domain || key.client_email || `key ${key.fingerprint}`;
+  key.label =
+    key.domain ||
+    key.client_email ||
+    (key.client_id ? `client ${key.client_id.slice(0, 26)}…` : `key ${key.fingerprint}`);
   return key;
 }
 
@@ -165,7 +182,7 @@ export function parseKeysText(text) {
   }
 
   if (!keys.length) {
-    throw new KeyError(problems.join("; ") || "no usable credentials found", source);
+    throw new KeyError(problems.join("; ") || "no usable credentials found");
   }
   return { keys, problems };
 }

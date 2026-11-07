@@ -176,27 +176,35 @@ function renderKeys() {
     const domain = document.createElement("div");
     domain.className = "domain";
     const dot = document.createElement("span");
-    dot.className = `dot ${key.status === "ok" ? "ok" : key.status === "blocked" ? "blocked" : key.status === "error" ? "error" : ""}`;
+    const tone = key.needs_consent ? "client" : key.status;
+    dot.className = `dot ${tone === "ok" ? "ok" : tone === "blocked" ? "blocked" : tone === "error" ? "error" : tone === "client" ? "client" : ""}`;
     domain.append(dot, document.createTextNode(key.domain || key.label || "unnamed key"));
 
     const sub = document.createElement("div");
     sub.className = "sub";
     const kind = key.kind === "service_account" ? "service account" : "OAuth";
-    sub.textContent = `${kind} · ${used}/50 seats · ${key.message || key.status}`;
+    sub.textContent = key.needs_consent
+      ? `${kind} client · ${key.message || "authorize once to mint a refresh token"}`
+      : `${kind} · ${used}/50 seats · ${key.message || key.status}`;
 
     meta.append(domain, sub);
 
     const actions = document.createElement("div");
     actions.className = "actions";
 
+    if (key.needs_consent) {
+      actions.append(actionButton("Authorize", () => authorizeKey(key.id), "primary"));
+    }
     if (!key.domain) {
       actions.append(actionButton("Set domain", () => setKeyDomain(key.id)));
     }
-    actions.append(
-      actionButton("Check", () => checkKey(key.id)),
-      actionButton("Delete users", () => deleteKeyUsers(key.id), "danger"),
-      actionButton("Remove", () => removeKey(key.id), "ghost")
-    );
+    if (!key.needs_consent) {
+      actions.append(
+        actionButton("Check", () => checkKey(key.id)),
+        actionButton("Delete users", () => deleteKeyUsers(key.id), "danger")
+      );
+    }
+    actions.append(actionButton("Remove", () => removeKey(key.id), "ghost"));
 
     row.append(meta, actions);
     list.append(row);
@@ -499,9 +507,14 @@ async function addKeys(text, source = "pasted") {
   const parsed = parseKeysText(text);
   for (const problem of parsed.problems) log.warn(problem);
 
+  const domain = $("key-domain")?.value.trim().toLowerCase() || null;
+  const admin = $("key-admin")?.value.trim().toLowerCase() || null;
+
   await mutate((draft) => {
     for (const key of parsed.keys) {
       if (draft.keys.some((existing) => existing.fingerprint === key.fingerprint)) continue;
+      if (domain && !key.domain) key.domain = domain;
+      if (admin && !key.admin) key.admin = admin;
       draft.keys.push(key);
     }
   });
@@ -510,18 +523,72 @@ async function addKeys(text, source = "pasted") {
   await refresh();
 
   for (const key of parsed.keys) {
-    if (key.domain) {
-      await checkKey(key.id);
-    } else {
-      await remember(`${key.label}: no domain yet — detecting`, "step");
-      await checkKey(key.id);
+    if (key.needs_consent) {
+      await remember(
+        `${key.label}: client stored — press Authorize in Tenants to mint its refresh token`,
+        "step"
+      );
+      continue;
     }
+    await checkKey(key.id);
+  }
+}
+
+// A stored client (client_secret_*.json) has no refresh token yet. One consent
+// run writes it back into the same entry, so the tenant row never duplicates.
+async function authorizeKey(id) {
+  const key = state.keys.find((entry) => entry.id === id);
+  if (!key) return;
+  if (key.kind === "service_account") {
+    await remember(`${key.label}: service accounts do not need consent`, "warn");
+    return;
+  }
+  if (!key.client_id || !key.client_secret) {
+    await remember(`${key.label}: client_id or client_secret is missing`, "error");
+    return;
+  }
+
+  try {
+    const client = parseClient(
+      JSON.stringify({
+        installed: { client_id: key.client_id, client_secret: key.client_secret },
+      })
+    );
+    await remember(`${key.label}: approve the consent tab as the tenant admin`, "step");
+    const verifier = makeVerifier();
+    const code = await waitForCode(client.client_id, verifier);
+    const credential = await exchangeCode(client, code, verifier);
+
+    await mutate((draft) => {
+      const target = draft.keys.find((entry) => entry.id === id);
+      if (!target) return;
+      target.refresh_token = credential.refresh_token;
+      target.token_uri = credential.token_uri || target.token_uri;
+      if (Array.isArray(credential.scopes) && credential.scopes.length) {
+        target.scopes = credential.scopes;
+      }
+      target.needs_consent = false;
+      target.status = "new";
+      target.message = "";
+      target.authorized_at = new Date().toISOString();
+    });
+
+    await refresh();
+    await remember(`${key.label}: consent granted`, "ok");
+    await checkKey(id);
+  } catch (error) {
+    await remember(`${key.label}: ${error.message || error}`, "error");
   }
 }
 
 async function checkKey(id) {
   const key = state.keys.find((entry) => entry.id === id);
   if (!key) return;
+
+  if (key.needs_consent) {
+    await remember(`${key.label}: authorize this client before checking it`, "warn");
+    return;
+  }
 
   await remember(`checking ${key.label}`, "step");
   try {
@@ -1088,7 +1155,7 @@ async function handlePayload(raw, source = "pasted") {
     return;
   }
 
-  switchTab("phone");
+  switchTab("setup");
 
   if (/^sms(t?o)?:/i.test(text)) {
     await savePhone({ ...parseSms(text), payload: text, source });
@@ -1434,7 +1501,9 @@ async function decodeTotpFile(file) {
 }
 
 async function checkTwoStep() {
-  const key = state.keys.find((entry) => entry.status === "ok") || state.keys[0];
+  const key =
+    state.keys.find((entry) => entry.status === "ok") ||
+    state.keys.find((entry) => !entry.needs_consent);
   if (!key) {
     await remember("load a key before checking 2SV", "warn");
     return;
@@ -1792,38 +1861,6 @@ function wire() {
     }
   });
 
-  $("authorize").addEventListener("click", async () => {
-    try {
-      const client = parseClient($("client-input").value);
-      const domain = $("client-domain").value.trim().toLowerCase() || null;
-      const impersonate = $("client-admin").value.trim().toLowerCase();
-
-      await remember("opening the consent screen — approve it as the tenant admin", "step");
-      const verifier = makeVerifier();
-      const code = await waitForCode(client.client_id, verifier);
-      const credential = await exchangeCode(client, code, verifier);
-
-      const raw = {
-        ...credential,
-        ...(domain ? { domain } : {}),
-        ...(impersonate ? { admin: impersonate } : {}),
-      };
-      const parsed = parseKeysText(JSON.stringify([raw]));
-      await mutate((draft) => {
-        for (const key of parsed.keys) {
-          if (draft.keys.some((existing) => existing.fingerprint === key.fingerprint)) continue;
-          draft.keys.push(key);
-        }
-      });
-      await remember("key authorized and stored", "ok");
-      $("client-input").value = "";
-      await refresh();
-      await checkKey(parsed.keys[0].id);
-    } catch (error) {
-      await remember(error.message || String(error), "error");
-    }
-  });
-
   $("export").addEventListener("click", () => exportAccounts(false));
   $("copy-all").addEventListener("click", () =>
     copyText(state.accounts.map(accountText).join("\n\n"))
@@ -1851,7 +1888,7 @@ function wire() {
 
   // Paste and drop: a screenshot of the QR, or the consent link as text.
   const qrDrop = $("qr-drop");
-  const phonePanel = $("panel-phone");
+  const phonePanel = $("phone-gate");
 
   if (qrDrop) {
     qrDrop.addEventListener("click", () => $("qr-file").click());
@@ -1880,7 +1917,7 @@ function wire() {
       const files = clipboardFiles(data);
       const image = files.find(isImageFile);
       if (image) {
-        switchTab("phone");
+        switchTab("setup");
         try {
           await decodeFile(image);
         } catch (error) {
@@ -1896,7 +1933,7 @@ function wire() {
       ).trim();
 
       if (/^data:image\//i.test(text)) {
-        switchTab("phone");
+        switchTab("setup");
         try {
           await decodeDataUrl(text, "dropped");
         } catch (error) {
@@ -1939,7 +1976,7 @@ function wire() {
     const image = files.find(isImageFile);
     if (image) {
       event.preventDefault();
-      switchTab("phone");
+      switchTab("setup");
       try {
         await decodeFile(image);
       } catch (error) {
@@ -1955,7 +1992,7 @@ function wire() {
 
     if (dataImage) {
       event.preventDefault();
-      switchTab("phone");
+      switchTab("setup");
       try {
         await decodeDataUrl(dataImage, "pasted");
       } catch (error) {

@@ -44,12 +44,14 @@ chrome://extensions → Developer mode → Load unpacked → dist/chrome
 The runner opens on install. If it does not, click the toolbar icon and choose
 **Open runner**.
 
-1. **Keys** — paste
-   `[{"client_id":"…","client_secret":"…","refresh_token":"…"}]`. The domain is
-   detected from the tenant, so there is no domain field.
-2. **Setup** — the checklist turns green as each step is proven, and the DuckDNS
+1. **Keys** — drop the `client_secret_*.apps.googleusercontent.com.json` you
+   downloaded from the Cloud console, then press **Authorize** on the tenant row
+   and approve the consent tab as the tenant admin. A ready-made key with
+   `client_id`, `client_secret` and `refresh_token` can be pasted instead. The
+   domain is detected from the tenant, so there is no domain field.
+2. **Setup** — the checklist turns green as each step is proven. The DuckDNS
    card writes the `google-site-verification` TXT record for you if you give it
-   the account token.
+   the account token, and the Phone gate card reads the admin signup QR.
 3. **Run** — choose a count, press Start.
 
 Accounts are written to extension storage the moment the cookie lands. Export is

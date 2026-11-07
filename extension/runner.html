@@ -29,7 +29,6 @@
             <button class="tab active" data-tab="run" role="tab">Run</button>
             <button class="tab" data-tab="keys" role="tab">Keys</button>
             <button class="tab" data-tab="accounts" role="tab">Accounts</button>
-            <button class="tab" data-tab="phone" role="tab">Phone gate</button>
             <button class="tab" data-tab="setup" role="tab">Setup</button>
           </nav>
 
@@ -112,25 +111,40 @@
           <div class="tabpanel" id="panel-keys">
             <div class="card">
               <div class="card-head">
-                <h2>Add keys</h2>
-                <span class="hint">JSON array, JSONL, or one per line</span>
+                <h2>Add a tenant</h2>
+                <span class="hint">drop the downloaded client JSON</span>
               </div>
               <textarea
                 id="key-input"
                 spellcheck="false"
-                placeholder='[{"client_id":"...","client_secret":"...","refresh_token":"..."}]'
+                placeholder='{"installed":{"client_id":"...apps.googleusercontent.com","client_secret":"GOCSPX-..."}}'
               ></textarea>
-              <div class="drop" id="key-drop">Drop a <b>.json</b> or <b>.txt</b> credential file here</div>
+              <div class="drop" id="key-drop">
+                Drop <span class="mono">client_secret_*.apps.googleusercontent.com.json</span> here
+              </div>
               <div class="buttons">
-                <button id="add-keys" class="btn primary">Add keys</button>
+                <button id="add-keys" class="btn primary">Add</button>
                 <button id="keys-from-file" class="btn ghost">Choose file</button>
                 <input id="key-file" type="file" accept=".json,.txt,application/json" hidden />
               </div>
+              <div class="controls">
+                <label class="field">
+                  <span>Domain (optional)</span>
+                  <input id="key-domain" placeholder="detected from the tenant" />
+                </label>
+                <label class="field">
+                  <span>Admin (optional)</span>
+                  <input id="key-admin" placeholder="admin@example.duckdns.org" />
+                </label>
+              </div>
               <p class="note">
-                Paste only <span class="mono">client_id</span>,
-                <span class="mono">client_secret</span> and
-                <span class="mono">refresh_token</span> &mdash; the domain is detected from the
-                tenant. One key holds 50 seats. Credentials are stored locally in this extension,
+                The file from <b>Credentials &rarr; Desktop app</b> is all you need &mdash; drop it,
+                paste it, or pick it. It lands in Tenants as a client; press <b>Authorize</b> once,
+                approve the consent tab as the tenant admin, and the refresh token is written into
+                that same entry. A ready-made key with
+                <span class="mono">client_id</span>, <span class="mono">client_secret</span> and
+                <span class="mono">refresh_token</span> is accepted too. The domain is detected from
+                the tenant. One key holds 50 seats. Credentials are stored locally in this extension,
                 unencrypted.
               </p>
             </div>
@@ -144,35 +158,6 @@
                 <p class="empty">no keys yet</p>
               </div>
             </div>
-
-            <details class="card">
-              <summary>
-                <h2>Create a key here</h2>
-                <span class="hint">one consent screen, done</span>
-              </summary>
-              <p class="note">
-                Paste the JSON from a <b>Desktop app</b> OAuth client, then approve the consent tab as the
-                tenant admin. The refresh token is stored locally; the domain is detected from the tenant.
-              </p>
-              <textarea
-                id="client-input"
-                spellcheck="false"
-                placeholder='{"installed":{"client_id":"...","client_secret":"..."}}'
-              ></textarea>
-              <div class="controls">
-                <label class="field">
-                  <span>Domain (optional)</span>
-                  <input id="client-domain" placeholder="detected from the tenant" />
-                </label>
-                <label class="field">
-                  <span>Admin (optional)</span>
-                  <input id="client-admin" placeholder="admin@example.duckdns.org" />
-                </label>
-              </div>
-              <div class="buttons">
-                <button id="authorize" class="btn primary">Authorize key</button>
-              </div>
-            </details>
           </div>
 
           <!-- ACCOUNTS ------------------------------------------------------------->
@@ -203,52 +188,6 @@
               <div id="account-list" class="accounts">
                 <p class="empty">none yet</p>
               </div>
-            </div>
-          </div>
-
-          <!-- PHONE ---------------------------------------------------------------->
-          <div class="tabpanel" id="panel-phone">
-            <div class="card">
-              <div class="card-head">
-                <h2>Phone gate</h2>
-                <span class="hint">directly, or one page behind</span>
-              </div>
-              <p class="note">
-                When signup stops at &ldquo;verify your device&rdquo;, the QR carries either an
-                <span class="mono">sms:</span> link or a link to Google's consent page. Either way this
-                opens it in the background and presses <b>Send SMS</b> for you, then reads the number
-                and message. You do not have to stay on the page.
-              </p>
-              <p class="note">
-                It can read the message, not send it. You still need a line that can text from the
-                number being verified.
-              </p>
-              <div class="buttons">
-                <button id="scan-tab" class="btn primary">Scan Google tab</button>
-                <button id="pick-qr" class="btn ghost">Decode image</button>
-                <input id="qr-file" type="file" accept="image/*" hidden />
-              </div>
-              <div class="drop" id="qr-drop" role="button" tabindex="0">
-                Paste (<span class="mono">Ctrl+V</span>), drop an image, or drop a link here
-              </div>
-              <p class="note mono" id="phone-source">no scan yet</p>
-            </div>
-
-            <div class="card">
-              <div class="card-head">
-                <h2>Number</h2>
-                <button class="btn tiny ghost copy" data-copy-target="phone-number">Copy</button>
-              </div>
-              <div id="phone-number" class="bigvalue mono">&mdash;</div>
-            </div>
-
-            <div class="card grow">
-              <div class="card-head">
-                <h2>Message</h2>
-                <button class="btn tiny ghost copy" data-copy-target="phone-body">Copy</button>
-              </div>
-              <div id="phone-body" class="bigvalue mono">&mdash;</div>
-              <div id="phone-payload" class="payload mono"></div>
             </div>
           </div>
 
@@ -356,9 +295,9 @@
                 </li>
               </ol>
               <p class="note">
-                If signup stops at a QR instead of a phone field, open the <b>Phone gate</b> tab &mdash;
-                it reads the destination number and the exact message to send. The line must be able to
-                send SMS; receive-only numbers fail.
+                If signup stops at a QR instead of a phone field, use the <b>Phone gate</b> card just
+                below &mdash; it reads the destination number and the exact message to send. The line
+                must be able to send SMS; receive-only numbers fail.
               </p>
               <p class="note">
                 Already have a Workspace tenant? Skip the signup and add the free edition from
@@ -375,6 +314,47 @@
                 is identical.
               </p>
             </details>
+
+            <div class="card" id="phone-gate">
+              <div class="card-head">
+                <h2>Phone gate</h2>
+                <span class="hint">admin signup only</span>
+              </div>
+              <p class="note">
+                Only the tenant admin's signup meets this. When the form stops at &ldquo;verify your
+                device&rdquo;, the QR carries either an <span class="mono">sms:</span> link or a link
+                to Google's consent page. Either way this opens it in the background and presses
+                <b>Send SMS</b>, then reads the number and the message. You do not have to stay on the
+                page. It can read the message, not send it &mdash; the line still has to text from the
+                number being verified.
+              </p>
+              <div class="buttons">
+                <button id="scan-tab" class="btn primary">Scan Google tab</button>
+                <button id="pick-qr" class="btn ghost">Decode image</button>
+                <input id="qr-file" type="file" accept="image/*" hidden />
+              </div>
+              <div class="drop" id="qr-drop" role="button" tabindex="0">
+                Paste (<span class="mono">Ctrl+V</span>), drop an image, or drop a link here
+              </div>
+              <p class="note mono" id="phone-source">no scan yet</p>
+
+              <div class="gate-row">
+                <div class="card-head">
+                  <h2>Number</h2>
+                  <button class="btn tiny ghost copy" data-copy-target="phone-number">Copy</button>
+                </div>
+                <div id="phone-number" class="bigvalue mono">&mdash;</div>
+              </div>
+
+              <div class="gate-row">
+                <div class="card-head">
+                  <h2>Message</h2>
+                  <button class="btn tiny ghost copy" data-copy-target="phone-body">Copy</button>
+                </div>
+                <div id="phone-body" class="bigvalue mono">&mdash;</div>
+                <div id="phone-payload" class="payload mono"></div>
+              </div>
+            </div>
 
             <details class="card" open>
               <summary><h2>3 &middot; Authenticator setup</h2></summary>

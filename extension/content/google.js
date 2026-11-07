@@ -282,7 +282,7 @@
     }
 
     if (/verify your device|scan the qr|qr code|scan this/i.test(body)) {
-      once("phone-gate", "phone gate detected — open the Phone gate tab and press Scan Google tab");
+      once("phone-gate", "phone gate detected — open Setup and press Scan Google tab");
       return;
     }
 
