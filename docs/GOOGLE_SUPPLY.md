@@ -7,8 +7,8 @@ Short answer: **the Android account manager is the only free surface that
 substitutes device trust for a phone**, and even it is tightening. Every web
 surface measured tonight ends in the same gate.
 
-> Research probes from the pre-SSO tree live under `legacy/tools/`; the current
-> SSO helpers are in `tools/`.
+> The Python research probes referenced below are no longer in the tree; they
+> remain in the Git history. The Firefox extension is the current path.
 
 ## What the web flow actually does now
 

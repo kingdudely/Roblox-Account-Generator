@@ -6,6 +6,12 @@ import { api, isFirefox, sleep, withTimeout } from "./api.js";
 
 export const SIGNUP = "https://www.roblox.com/CreateAccount";
 export const HOME = "https://www.roblox.com/home";
+
+// Roblox's Google SSO entry point. A plain GET 302s to Google and sets the
+// HttpOnly RBXSsoExchangeCookie on auth.roblox.com that binds the OAuth state
+// to this browser session. No CreateAccount page and no layout lottery.
+export const SSO_INIT =
+  "https://auth.roblox.com/v1/external/3161830277039358/sso/oauth/init?postAuthenticationIntentId=web-redirect";
 export const COOKIE = ".ROBLOSECURITY";
 
 export const LANE_COLUMNS = ["blue", "turquoise", "green", "purple", "orange", "pink"];
@@ -386,6 +392,31 @@ async function openGoogleTab(tabId, scan, storeId, timeout, shouldStop, log) {
   throw new Error("Google sign-in never opened");
 }
 
+// Direct counterpart to openGoogleTab: the init request is already in flight in
+// this tab, so all that is left is to wait for the 302 to land on Google.
+async function waitForGoogle(tabId, timeout, shouldStop, log) {
+  const deadline = Date.now() + timeout;
+  let last = "";
+
+  while (Date.now() < deadline) {
+    if (shouldStop && shouldStop()) throw new Error("stopped");
+    const tab = await getTab(tabId);
+    if (!tab) throw new Error("tab closed");
+
+    const url = tab.url || "";
+    if (url.includes("accounts.google.com")) return tab;
+    if (url && url !== last) {
+      last = url;
+      log(`sso init: ${url.slice(0, 90)}`);
+    }
+    if (tab.status === "complete" && /\/sso\/oauth\/init/.test(url)) {
+      throw new Error(`sso init refused (${url.slice(0, 80)})`);
+    }
+    await sleep(500);
+  }
+  throw new Error("sso init did not reach Google");
+}
+
 async function pumpCredentials(tab, identity, code, timeout, shouldStop, storeId, log) {
   const deadline = Date.now() + timeout;
   let lastNote = 0;
@@ -481,19 +512,27 @@ export async function runIdentity(options) {
     const wiped = await clearSiteCookies(storeId);
     if (wiped) logFor(`cleared ${wiped} stale cookies`);
 
-    const tab = await api.tabs.create(tabOptions(storeId, { url: SIGNUP, active: false }));
+    const tab = await api.tabs.create(tabOptions(storeId, { url: SSO_INIT, active: false }));
     tabId = tab.id;
-    logFor(`${identity.email} · signup opened`);
+    logFor(`${identity.email} · sso init opened`);
 
-    const scan = await waitForSignup(tabId, storeId, Math.min(budget, 120_000), shouldStop, logFor);
-    googleTab = await openGoogleTab(
-      tabId,
-      scan,
-      storeId,
-      Math.min(budget, 90_000),
-      shouldStop,
-      logFor
-    );
+    try {
+      googleTab = await waitForGoogle(tabId, Math.min(budget, 30_000), shouldStop, logFor);
+      logFor("sso init -> google (direct)");
+    } catch (error) {
+      if (String(error.message) === "stopped") throw error;
+      logFor(`direct sso init failed (${error.message}) - falling back to the signup CTA`);
+      await api.tabs.update(tabId, { url: SIGNUP });
+      const scan = await waitForSignup(tabId, storeId, Math.min(budget, 120_000), shouldStop, logFor);
+      googleTab = await openGoogleTab(
+        tabId,
+        scan,
+        storeId,
+        Math.min(budget, 90_000),
+        shouldStop,
+        logFor
+      );
+    }
     logFor(`google: ${(googleTab.url || "").slice(0, 90)}`);
 
     const cookie = await pumpCredentials(

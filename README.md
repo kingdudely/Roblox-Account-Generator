@@ -67,5 +67,5 @@ extension/
   lib/                   admin, lanes, keys, consent, QR, storage
 ```
 
-The previous Python pipeline (`main.py`, `cloud_identity.py`, `tools/`) is still
-on disk as a fallback. The extension does not import or run any of it.
+The Python pipeline that preceded the extension is not part of this tree; it
+remains in the Git history. The extension is self-contained.

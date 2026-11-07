@@ -1,9 +1,9 @@
 # Google SSO path — from a blank machine to 50 Roblox accounts
 
-> **Historical.** This was written for the per-tool layout. SSO helpers live in
-> `tools/`; pre-SSO research probes live in `legacy/tools/`. [`README.md`](../README.md)
-> is the current setup and `main.py` is the main entry point. The measurements,
-> failure modes and console evidence in this document are still accurate.
+> **Historical.** This was written for the Python tooling, which is no longer in
+> the tree; it remains in the Git history. [`README.md`](../README.md) describes
+> the Firefox extension, which is the current path. The measurements, failure
+> modes and console evidence in this document are still accurate.
 
 This is the path that skips the captcha entirely. Not solved, not bypassed —
 **never asked**. Roblox's "Sign in with Google" flow creates an account from a
@@ -62,6 +62,18 @@ roblox.com/sso-complete?sso-type=signup   ← account is created here
         ▼
 .ROBLOSECURITY  (httpOnly cookie — this is the credential from now on)
 ```
+
+The extension does not start at `CreateAccount`. It sends the lane tab straight
+to Roblox's OAuth entry point:
+
+```
+GET https://auth.roblox.com/v1/external/3161830277039358/sso/oauth/init?postAuthenticationIntentId=web-redirect
+  -> 302 accounts.google.com/o/oauth2/v2/auth?...
+```
+
+The 302 sets the HttpOnly `RBXSsoExchangeCookie` on `auth.roblox.com`, which
+binds the OAuth `state` to that browser session. No signup page, no layout
+lottery, and no reload loop.
 
 Two things fall out of that shape:
 
