@@ -12,6 +12,12 @@ export const HOME = "https://www.roblox.com/home";
 // to this browser session. No CreateAccount page and no layout lottery.
 export const SSO_INIT =
   "https://auth.roblox.com/v1/external/3161830277039358/sso/oauth/init?postAuthenticationIntentId=web-redirect";
+// Direct Google sign-in. The Roblox OAuth flow only offers a challenge to a
+// brand-new identity; this entry point is what shows the account-setup wizard,
+// including the authenticator enrollment. Once signed in, the container keeps
+// the Google session and the SSO init reuses it.
+export const GOOGLE_PRIME =
+  "https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fmyaccount.google.com%2F";
 export const COOKIE = ".ROBLOSECURITY";
 // Answers with the bare exit address as plain text. Read from inside the lane
 // so it reflects that container's proxy, not the browser's.
@@ -679,7 +685,8 @@ async function openGoogleTab(tabId, scan, storeId, timeout, shouldStop, log) {
 
 // Direct counterpart to openGoogleTab: the init request is already in flight in
 // this tab, so all that is left is to wait for the 302 to land on Google.
-async function waitForGoogle(tabId, timeout, shouldStop, log) {
+async function waitForGoogle(tabId, timeout, shouldStop, log, options = {}) {
+  const { ignorePrime = false } = options;
   const deadline = Date.now() + timeout;
   let last = "";
 
@@ -689,7 +696,13 @@ async function waitForGoogle(tabId, timeout, shouldStop, log) {
     if (!tab) throw new Error("tab closed");
 
     const url = tab.url || "";
-    if (url.includes("accounts.google.com")) return tab;
+    // After a prime, the tab is already on accounts.google.com. Returning here
+    // would hand the old prime URL to pumpCredentials and never open Roblox's
+    // SSO init. The prime URL carries continue=…myaccount.google.com; the real
+    // OAuth URL carries Roblox's own continue target.
+    if (url.includes("accounts.google.com") && !(ignorePrime && url.includes("myaccount.google.com"))) {
+      return tab;
+    }
     if (url && url !== last) {
       last = url;
       log(`sso init: ${url.slice(0, 90)}`);
@@ -943,6 +956,110 @@ async function finaliseOnTab(tabId, timeout, shouldStop, log, options = {}) {
   return { session: session || { status: 0 }, ui: step, username: session?.name || username || null };
 }
 
+// Sign the identity in to Google directly, before Roblox's OAuth flow. This is
+// the only entry point that shows the account-setup wizard to a brand-new user;
+// the OAuth flow goes straight to a challenge, which is why codes-only identities
+// were hit-or-miss. A failure here is not fatal: the caller falls back to the
+// normal SSO lane with whatever Google session the prime left behind.
+async function primeGoogleSession(tabId, identity, timeout, shouldStop, storeId, log, options = {}) {
+  const { codesFor = () => [], otpFor = () => "" } = options;
+  const email = String(identity.email || "").toLowerCase();
+  const initialSecret =
+    (typeof otpFor === "function" ? otpFor(identity.email) : "") || identity.otp_secret || "";
+  const deadline = Date.now() + Math.min(timeout, 90_000);
+
+  let lastUrl = "";
+  let lastBody = "";
+  let signedInAt = 0;
+  let sent = 0;
+
+  while (Date.now() < deadline) {
+    if (shouldStop && shouldStop()) throw new Error("stopped");
+
+    const tab = await getTab(tabId);
+    if (!tab) throw new Error("prime tab closed");
+    const url = tab.url || "";
+    if (url !== lastUrl) {
+      lastUrl = url;
+      log(`prime: ${shortUrl(url)}`);
+    }
+
+    const secret =
+      (typeof otpFor === "function" ? otpFor(identity.email) : "") || "";
+    if (secret && secret !== initialSecret) {
+      log("prime: authenticator secret captured");
+      // The code has been filled; let Google finish the confirmation screen.
+      await sleep(2500);
+      return true;
+    }
+
+    if (/^https:\/\/myaccount\.google\.com\//.test(url)) {
+      if (!signedInAt) {
+        signedInAt = Date.now();
+        log(
+          initialSecret
+            ? "prime: signed in; authenticator already on file"
+            : "prime: signed in; waiting for the 2SV setup card"
+        );
+      }
+      // A stored secret means there is nothing to enrol — the session is the
+      // product. A fresh account gets a setup card, which the content script
+      // needs a few ticks to drive.
+      if (initialSecret || Date.now() - signedInAt > 30_000) {
+        log(
+          initialSecret
+            ? "prime: session ready"
+            : "prime: signed in, but no authenticator secret appeared"
+        );
+        return Boolean(initialSecret);
+      }
+    }
+
+    const body = await exec(
+      tabId,
+      () => String(document.body ? document.body.innerText : "").slice(0, 5000),
+      [],
+      "MAIN"
+    ).catch(() => "");
+
+    if (body && body !== lastBody) {
+      lastBody = body;
+      if (/don.?t meet your organization|2-step verification policy/i.test(body)) {
+        log("prime: policy wall on direct sign-in — falling back to the SSO lane");
+        return false;
+      }
+      if (/type the text you hear or see|captcha image/i.test(body)) {
+        log("prime: captcha on direct sign-in — falling back to the SSO lane");
+        return false;
+      }
+    }
+
+    try {
+      const codes = (typeof codesFor === "function" ? codesFor() : []).filter(Boolean);
+      await api.tabs.sendMessage(tabId, {
+        type: "google-fill",
+        email: identity.email,
+        password: identity.password,
+        code: codes[0] || "",
+        codes,
+        otp:
+          (typeof otpFor === "function" ? otpFor(identity.email) : "") ||
+          identity.otp_secret ||
+          "",
+      });
+      sent += 1;
+    } catch (_) {
+      // The content script is declared at document_idle; the first handoff can
+      // arrive before it does. The next tick will land.
+    }
+
+    await sleep(2000);
+  }
+
+  log(`prime: timed out after ${sent} handoffs — falling back to the SSO lane`);
+  return false;
+}
+
 export async function runIdentity(options) {
   const {
     identity,
@@ -960,6 +1077,7 @@ export async function runIdentity(options) {
     acceptTerms = true,
     laneSurface = "tab",
     probeIp = false,
+    primeGoogle = true,
   } = options;
 
   const started = Date.now();
@@ -975,7 +1093,8 @@ export async function runIdentity(options) {
     const wiped = await clearSiteCookies(storeId);
     if (wiped) logFor(`cleared ${wiped} stale cookies`);
 
-    surface = await openLaneSurface(storeId, probeIp ? IP_ECHO : SSO_INIT, lane, laneSurface);
+    const startUrl = probeIp ? IP_ECHO : primeGoogle ? GOOGLE_PRIME : SSO_INIT;
+    surface = await openLaneSurface(storeId, startUrl, lane, laneSurface);
     tabId = surface.tabId;
     if (probeIp) {
       // The exit IP has to be read from inside the lane, because the proxy is
@@ -992,10 +1111,10 @@ export async function runIdentity(options) {
       if (seen && identity.exit_ip && identity.exit_ip !== seen) {
         logFor(`exit ip changed ${identity.exit_ip} -> ${seen} — rotating proxies break sign-in`);
       }
-      await api.tabs.update(tabId, { url: SSO_INIT }).catch(() => {});
+      await api.tabs.update(tabId, { url: primeGoogle ? GOOGLE_PRIME : SSO_INIT }).catch(() => {});
     }
     logFor(
-      `${identity.email} · sso init opened` +
+      `${identity.email} · ${primeGoogle ? "google prime opened" : "sso init opened"}` +
         (surface.ownWindow
           ? " in its own window"
           : surface.fallback
@@ -1003,8 +1122,29 @@ export async function runIdentity(options) {
             : " in a background tab")
     );
 
+    if (primeGoogle) {
+      let primed = false;
+      try {
+        primed = await primeGoogleSession(tabId, identity, budget, shouldStop, storeId, logFor, {
+          codesFor: () => identity.codes || [],
+          otpFor,
+        });
+      } catch (error) {
+        if (String(error.message || error) === "stopped") throw error;
+        logFor(`google prime failed (${error.message || error}) — continuing with the SSO lane`);
+      }
+      logFor(
+        primed
+          ? "google prime: authenticator ready — starting Roblox SSO"
+          : "google prime: no new factor — starting Roblox SSO with the session it left"
+      );
+      await api.tabs.update(tabId, { url: SSO_INIT }).catch(() => {});
+    }
+
     try {
-      googleTab = await waitForGoogle(tabId, Math.min(budget, 30_000), shouldStop, logFor);
+      googleTab = await waitForGoogle(tabId, Math.min(budget, 30_000), shouldStop, logFor, {
+        ignorePrime: primeGoogle,
+      });
       logFor("sso init -> google (direct)");
     } catch (error) {
       if (String(error.message) === "stopped") throw error;

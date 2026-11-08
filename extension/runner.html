@@ -459,6 +459,27 @@
                         the Directory API.
                       </p>
                     </div>
+                    <div class="helper">
+                      <div class="helper-head">
+                        <h3>Login audit</h3>
+                        <span class="hint">Google's own failure reason</span>
+                      </div>
+                      <div class="controls">
+                        <label class="field">
+                          <span>Identity email</span>
+                          <input id="audit-email" placeholder="amara.petrov1@example.com" />
+                        </label>
+                      </div>
+                      <div class="buttons">
+                        <button id="audit-check" class="btn ghost">Read login audit</button>
+                      </div>
+                      <p class="note mono" id="audit-status">no audit read</p>
+                      <p class="note">
+                        Needs the <span class="mono">admin.reports.audit.readonly</span> scope. The
+                        newest failure is shown with Google's <b>login failure type</b>; that is what
+                        separates a policy refusal from a bad code or an expired challenge.
+                      </p>
+                    </div>
                   </li>
                   <li>
                     <p>In the Admin console, set <b>Enforcement On</b> and <b>Methods</b> to
@@ -487,7 +508,7 @@
                 <span class="step-num">4</span>
                 <span class="step-name">
                   Create the key
-                  <em>one desktop OAuth client, three scopes</em>
+                  <em>one desktop OAuth client, five scopes</em>
                 </span>
                 <span class="step-status" data-step-status="key">waiting</span>
                 <span class="step-caret" aria-hidden="true"></span>
@@ -509,8 +530,15 @@
                   <li>
                     <p>OAuth consent screen &rarr; <b>Internal</b>, with scopes
                     <span class="mono">admin.directory.user</span>,
-                    <span class="mono">admin.directory.user.security</span> and
-                    <span class="mono">admin.directory.domain.readonly</span>.</p>
+                    <span class="mono">admin.directory.user.security</span>,
+                    <span class="mono">admin.directory.domain.readonly</span>,
+                    <span class="mono">admin.reports.audit.readonly</span> and
+                    <span class="mono">cloud-identity.policies.readonly</span>.</p>
+                    <p class="note">
+                      A key authorized before these were added still works, but the login audit and
+                      policy reads answer 403. Press <b>Re-consent</b> on its Tenants row after adding
+                      the two scopes to the consent screen.
+                    </p>
                     <div class="substep-actions">
                       <button class="btn tiny link-out" data-href="https://console.cloud.google.com/apis/credentials/consent">Open consent screen</button>
                     </div>
@@ -710,14 +738,19 @@
                 <h2>2-Step Verification</h2>
                 <span class="hint">how a lane gets a second factor</span>
               </div>
+              <label class="field check">
+                <input id="prime-google" type="checkbox" checked />
+                <span>Sign in to Google first &mdash; enrol the authenticator before Roblox SSO</span>
+              </label>
               <p class="note">
-                There is no switch here, because there is no safe alternative. An identity with no
-                backup codes and no authenticator has <b>no second factor</b>, and Google answers that
-                with <i>your sign-in settings don&rsquo;t meet your organization&rsquo;s 2-Step
-                Verification policy</i> instead of enrolling it. So every lane mints a set before it
-                opens, and if Google asks for a code the runner does not have, the lane requests one
-                mid-challenge and answers it without restarting. If minting is refused, an existing
-                set is adopted from the Directory API rather than failing.
+                A lane that goes straight to Roblox&rsquo;s OAuth entry point only gets a challenge;
+                it never sees Google&rsquo;s account-setup wizard. <b>Sign in to Google first</b>
+                opens a direct sign-in in the same container, where a fresh identity is offered the
+                authenticator enrollment. The secret is captured and saved before the Roblox flow
+                starts. If that page is a captcha, a policy wall, or simply does not appear, the lane
+                falls back to the OAuth path, mints a backup code before opening, and requests one
+                mid-challenge if Google asks for a code it does not have. If minting is refused, an
+                existing set is adopted from the Directory API rather than failing.
               </p>
               <p class="note">
                 Finalising is <b>driven through Roblox&rsquo;s own page</b>: the lane clicks

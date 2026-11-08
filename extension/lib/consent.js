@@ -8,6 +8,12 @@ export const SCOPES = [
   "https://www.googleapis.com/auth/admin.directory.user",
   "https://www.googleapis.com/auth/admin.directory.user.security",
   "https://www.googleapis.com/auth/admin.directory.domain.readonly",
+  // Read the login audit. This is what gives a failed lane Google's own
+  // "login failure type" instead of a guess from the challenge page.
+  "https://www.googleapis.com/auth/admin.reports.audit.readonly",
+  // Read the effective 2SV policy. The Admin console is the source of truth,
+  // but the API is what lets the runner check it without a browser.
+  "https://www.googleapis.com/auth/cloud-identity.policies.readonly",
 ];
 
 const AUTH = "https://accounts.google.com/o/oauth2/v2/auth";

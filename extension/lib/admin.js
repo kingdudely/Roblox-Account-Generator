@@ -249,6 +249,53 @@ export async function twoStepStatus(key, email) {
   };
 }
 
+// Login audit. The Admin console's "Login failure type" is Google's own
+// diagnosis, and it is the only way to tell a policy refusal from a bad code,
+// an expired challenge, or an account that never had a factor. The Admin SDK
+// Reports API is a different host from the Directory API, hence the separate
+// fetch rather than call().
+export async function loginEvents(key, email, { maxResults = 50 } = {}) {
+  const query = new URLSearchParams({ maxResults: String(maxResults) });
+  const path = `/activity/users/${encodeURIComponent(
+    email
+  )}/applications/login?${query.toString()}`;
+  const url = `https://admin.googleapis.com/admin/reports/v1${path}`;
+
+  let token = await accessToken(key);
+  let response = await fetch(url, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (response.status === 401) {
+    token = await accessToken(key, true);
+    response = await fetch(url, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+  }
+  if (!response.ok) throw await parseError(response);
+
+  const data = await response.json();
+  const events = [];
+  for (const item of data.items || []) {
+    for (const event of item.events || []) {
+      const parameters = Object.fromEntries(
+        (event.parameters || []).map((entry) => [entry.name, entry.value])
+      );
+      events.push({
+        time: item.id?.time || "",
+        actor: item.actor?.email || email,
+        event: event.name || "",
+        failure: parameters.login_failure_type || "",
+        challenge: parameters.login_challenge_method || "",
+        challengeStatus: parameters.login_challenge_status || "",
+        loginType: parameters.login_type || "",
+        ip: parameters.actor_ip_address || parameters.ip_address || "",
+        parameters,
+      });
+    }
+  }
+  return events;
+}
+
 export async function insertUser(key, identity) {
   const body = {
     primaryEmail: identity.email,

@@ -590,6 +590,22 @@ The `twoStepVerification` and `verificationCodes` resources hang off the **servi
 root** in the Python client (`service.verificationCodes()`), not off `service.users()`,
 even though the discovery paths contain `/users/`.
 
+### 8.1.1 Why a lane signs in to Google first
+
+The Roblox OAuth entry point only ever showed a challenge to a fresh identity; it
+never showed Google's account-setup wizard. That is why codes-only identities were
+hit-or-miss: a backup code is a recovery credential, not a method the policy can
+enrol. The lane now opens a direct Google sign-in first, in the same container,
+where the setup wizard offers the authenticator. The secret is captured and saved
+before the Roblox SSO starts. If the direct page is a captcha, a policy wall, or
+never resolves, the lane falls back to the OAuth path and the backup-code flow.
+
+The extension's 2SV card now reads Google's own **login failure type** from the
+Reports API (`admin.reports.audit.readonly`), so a policy refusal is not guessed
+from the challenge page. The effective policy is readable with
+`cloud-identity.policies.readonly`. Keys authorized before those scopes were added
+need one **Re-consent** on the Tenants row.
+
 ### 8.2 Finalising the account (the step that looks like a ban)
 
 An SSO signup mints the account in the same redirect that sets the cookie, but

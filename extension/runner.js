@@ -236,6 +236,9 @@ function renderSettings() {
   const openOnInstall = $("open-on-install");
   if (openOnInstall) openOnInstall.checked = settings.openOnInstall !== false;
 
+  const primeGoogle = $("prime-google");
+  if (primeGoogle) primeGoogle.checked = settings.primeGoogle !== false;
+
   const laneSurface = $("lane-surface");
   if (laneSurface) laneSurface.value = settings.laneSurface === "window" ? "window" : "tab";
 
@@ -303,6 +306,10 @@ function renderKeys() {
     if (!key.needs_consent) {
       actions.append(
         actionButton("Check", () => checkKey(key.id)),
+        // Re-run consent so an existing key can pick up scopes added to
+        // SCOPES (the audit and policy reads). The old refresh token keeps
+        // working if this is dismissed.
+        actionButton("Re-consent", () => authorizeKey(key.id), "ghost"),
         actionButton("Delete users", () => deleteKeyUsers(key.id), "danger")
       );
     }
@@ -1328,6 +1335,7 @@ async function runBatch(queue, preflight) {
             gender: profile.gender,
             acceptTerms: settings.acceptTerms !== false,
             laneSurface: settings.laneSurface === "window" ? "window" : "tab",
+            primeGoogle: settings.primeGoogle !== false,
             probeIp: Boolean(proxyPool.length && storeId),
             onSession: async (cookie) => {
               provisional = {
@@ -1975,6 +1983,54 @@ async function checkTwoStep() {
   }
 }
 
+async function readLoginAudit() {
+  const key =
+    state.keys.find((entry) => entry.status === "ok") ||
+    state.keys.find((entry) => !entry.needs_consent);
+  if (!key) {
+    await remember("load a key before reading the login audit", "warn");
+    return;
+  }
+
+  const email = (
+    $("audit-email").value.trim() ||
+    $("totp-email").value.trim() ||
+    state.totp?.email ||
+    key.admin ||
+    ""
+  ).toLowerCase();
+  if (!email) {
+    await remember("set the identity email in the login audit card", "warn");
+    return;
+  }
+
+  try {
+    const events = await admin.loginEvents(key, email, { maxResults: 50 });
+    if (!events.length) {
+      setText("audit-status", `${email}: no login events`);
+      await remember(`${email}: no login events`, "warn");
+      return;
+    }
+    const lines = events.slice(0, 5).map((event) => {
+      const detail = event.failure || event.challengeStatus || event.challenge || event.loginType;
+      return `${event.time || "?"} ${event.event || "login"}${detail ? ` (${detail})` : ""}${
+        event.ip ? ` ${event.ip}` : ""
+      }`;
+    });
+    const summary = `${email}: ${lines.join(" | ")}`;
+    setText("audit-status", summary);
+    const failures = events.filter((event) => event.failure);
+    await remember(summary, failures.length ? "warn" : "ok");
+  } catch (error) {
+    const hint =
+      error.status === 403
+        ? " — re-authorize the key to grant admin.reports.audit.readonly"
+        : "";
+    setText("audit-status", `${error.message || error}${hint}`);
+    await remember(`login audit: ${error.message || error}${hint}`, "error");
+  }
+}
+
 // -------------------------------------------------------------------- duckdns
 
 async function saveDuck(fields) {
@@ -2501,6 +2557,12 @@ function wire() {
     });
   });
 
+  $("prime-google").addEventListener("change", async (event) => {
+    await mutate((draft) => {
+      draft.settings.primeGoogle = Boolean(event.target.checked);
+    });
+  });
+
   $("lane-surface").addEventListener("change", async (event) => {
     const value = event.target.value === "window" ? "window" : "tab";
     await mutate((draft) => {
@@ -2791,6 +2853,7 @@ function wire() {
     if (state.totp?.secret) saveTotp().catch(() => {});
   });
   $("totp-check").addEventListener("click", () => checkTwoStep());
+  $("audit-check").addEventListener("click", () => readLoginAudit());
   $("totp-clear").addEventListener("click", () => clearTotp());
   $("totp-qr").addEventListener("click", () => $("totp-qr-file").click());
   $("totp-qr-file").addEventListener("change", async (event) => {

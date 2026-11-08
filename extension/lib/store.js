@@ -26,6 +26,12 @@ export const DEFAULT_SETTINGS = {
   gender: 1,
   randomGender: false,
   acceptTerms: true,
+  // Sign the identity in to Google directly before opening Roblox's SSO. The
+  // OAuth flow only offers a challenge to a brand-new account; a direct sign-in
+  // is what shows the account-setup wizard, where the authenticator can be
+  // enrolled and its secret captured. A failed prime falls back to the normal
+  // OAuth lane, so this is safe to leave on.
+  primeGoogle: true,
   // Egress. Empty means direct. One SOCKS5/HTTP proxy per line; lanes cycle.
   proxyUrl: "",
   proxyList: "",
