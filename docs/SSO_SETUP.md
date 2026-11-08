@@ -518,31 +518,35 @@ policy message.
 `POST /users/{user}/verificationCodes/generate`; minting is not gated by
 enforcement.
 
-**Order matters, and getting it wrong is the bug this section used to document.**
-Minting is not a neutral side-channel: Google counts a backup code as an enrolled
-2SV *method*. Mint before the first sign-in and Google never offers the
-authenticator setup, because as far as it is concerned 2SV is already configured.
-The account is challenged for a code instead, burns one, and finishes with
-single-use codes as its only second factor — no `otp_secret`, nothing to answer a
-later challenge with. A tenant whose policy excludes verification codes then
-refuses it outright:
+**Measured, 2026-11-08, on a live tenant: 33 users, 1 enrolled in 2SV.**
+The single enrolled account is the admin, who enrolled from
+`myaccount.google.com`. Not one of the 32 identities was enrolled, yet 28 of
+them signed in successfully — every one of those by answering a backup code.
+The Roblox OAuth flow does not offer the authenticator setup wizard to these
+identities; it offers a challenge, and the only challenge they can answer is a
+code.
 
-> Your sign-in settings don't meet your organization's 2-Step Verification policy.
+That decides the order. A freshly created identity with **no codes and no
+authenticator has no second factor at all**, and Google does not respond by
+enrolling it — it refuses at the door:
 
-So the run now does it the other way round:
+> Couldn't sign you in. Your sign-in settings don't meet your organization's
+> 2-Step Verification policy. Contact your admin for more info.
 
-1. The first sign-in is left alone. Google offers the authenticator, the lane
-   enrols it, and the secret is saved as `otp_secret`.
-2. **After** the session lands, the ten codes are minted and stored as the
-   fallback for the next sign-in.
-3. Settings → *Mint backup codes before the first sign-in* restores the old
-   order for anyone who needs it. Leave it off.
+That is exactly the state the previous build produced for
+`mateo.cardoso1@testestdeez.duckdns.org`: `isEnrolledIn2Sv=false`,
+`isEnforcedIn2Sv=true`, zero verification codes, `lastLoginTime=1970`. Not a
+ban, not a missing licence — no usable method.
 
-Accounts already stuck in the codes-only state carry a **codes only** badge in
-the Accounts tab and a **repair 2sv** button. Repair calls
-`POST /users/{user}/verificationCodes/invalidate`, which leaves the user with no
-method at all — the one state where Google must show the enrolment screen again
-— and re-queues the identity. The Roblox account and its cookie are untouched.
+So codes are minted **before** the lane opens (Settings → *Mint backup codes
+before the first sign-in*, on by default), and a second set is minted after a
+successful session only if the first failed. An identity that still hits the
+policy wall has no usable method left: mint it another set from **Mint 2SV
+codes** on the Run tab, or from the API, and it signs in.
+
+Enrolment is not worthless — it is what the admin account needs, and it is what
+a tenant with enforcement actually wants — but for these identities the OAuth
+flow never reaches the wizard, so the codes are the second factor in practice.
 
 **Mint 2SV codes** on the Run tab still mints for identities that already exist.
 

@@ -974,19 +974,6 @@ input[type="checkbox"]:focus-visible {
   text-transform: uppercase;
 }
 
-/* an account whose only second factor is single-use codes */
-.codes-tag {
-  font-size: 9.5px;
-  color: #ffcfc7;
-  border: 1px solid #6c2f28;
-  background: linear-gradient(180deg, #6d3129, #42201b);
-  border-radius: 999px;
-  padding: 1px 7px;
-  margin-left: 6px;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-}
-
 /* the runner page outlived an extension reload */
 .stale {
   display: none;

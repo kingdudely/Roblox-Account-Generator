@@ -26,11 +26,14 @@ export const DEFAULT_SETTINGS = {
   gender: 1,
   randomGender: false,
   acceptTerms: true,
-  // Google counts a freshly minted backup code as an enrolled 2SV method, so a
-  // pre-minted account is never offered authenticator setup — it is challenged
-  // for a code instead and ends up with single-use codes as its only factor.
-  // Off means: enrol first, mint the codes afterwards as the fallback.
-  mintBeforeSignIn: false,
+  // Measured on a live tenant: 32 identities, 0 enrolled in 2SV, 28 of them
+  // signed in — all of them with backup codes. Google's OAuth flow never offers
+  // the authenticator wizard to these identities; it only offers a challenge.
+  // A user with no codes and no authenticator therefore has no method at all,
+  // and Google answers "your sign-in settings don't meet your organization's
+  // 2-Step Verification policy" instead of enrolling them. So codes are minted
+  // before the lane opens. Turning this off reproduces that deadlock.
+  mintBeforeSignIn: true,
   // Re-run SSO once when finalise comes back "User is moderated". The Google
   // session is still in the container, so it costs one silent round-trip.
   retryModerated: true,

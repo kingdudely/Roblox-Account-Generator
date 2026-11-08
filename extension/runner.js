@@ -344,13 +344,6 @@ function renderAccounts() {
       tag.textContent = "pending";
       title.append(tag);
     }
-    if (!account.otp_secret && Array.isArray(account.backup_codes) && account.backup_codes.length) {
-      const tag = document.createElement("span");
-      tag.className = "codes-tag";
-      tag.textContent = "codes only";
-      tag.title = "No authenticator secret — 2SV is answered by single-use codes, which some policies reject";
-      title.append(tag);
-    }
     const mail = document.createElement("div");
     mail.className = "mail";
     mail.textContent = account.email || "";
@@ -375,9 +368,6 @@ function renderAccounts() {
     }
     if (account.otp_secret) {
       acts.append(smallAction("otp", () => copyText(account.otp_secret)));
-    }
-    if (codes.length && !account.otp_secret) {
-      acts.append(smallAction("repair 2sv", () => repairTwoStep(account)));
     }
     if (account.status === "pending") {
       acts.append(smallAction("finalise", () => finaliseAccount(account)));
@@ -1416,45 +1406,6 @@ async function runBatch(queue, preflight) {
 }
 
 // -------------------------------------------------------------------- finalise
-
-// A user whose only 2SV method is backup codes does not satisfy a policy that
-// excludes SMS and voice, and Google refuses them at the door with "your
-// sign-in settings don't meet your organization's 2-Step Verification policy".
-// Removing the codes leaves no method at all, which is what makes Google show
-// the enrolment screen again — so the identity goes back on the queue and the
-// next sign-in sets up the authenticator.
-async function repairTwoStep(account) {
-  const key = state.keys.find((entry) => entry.id === account.key_id);
-  if (!key) {
-    await remember("no key for this account — cannot reach the directory", "error");
-    return;
-  }
-  const identity = state.identities.find((entry) => entry.id === account.identity_id);
-  const count = Array.isArray(account.backup_codes) ? account.backup_codes.length : 0;
-  const ok = confirm(
-    `Repair 2SV for ${account.email}?\n\n` +
-      `This invalidates ${count || "the"} backup code(s) and re-queues the identity, so the next ` +
-      "sign-in is forced to set up an authenticator app. The Roblox account and its cookie are " +
-      "not touched."
-  );
-  if (!ok) return;
-
-  await remember(`${account.email}: invalidating backup codes`, "step");
-  await admin.invalidateCodes(key, account.email);
-
-  await mutate((draft) => {
-    const row = draft.identities.find((entry) => entry.id === account.identity_id);
-    if (row) {
-      row.codes = [];
-      row.status = "ready";
-      row.error = null;
-    }
-    const stored = draft.accounts.find((entry) => entry.id === account.id);
-    if (stored) stored.backup_codes = [];
-  });
-  await remember(`${account.email}: codes cleared — queued for an authenticator setup`, "ok");
-  await refresh();
-}
 
 async function finaliseAccount(account) {
   await remember(`finalising ${account.email}...`, "step");
