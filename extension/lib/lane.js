@@ -477,14 +477,43 @@ async function uiFinaliseStep(birthday, username, gender, acceptTerms) {
     }
   }
 
+  // The birthday compliance form renders a Radix combobox *and* a hidden
+  // native select for each field. The hidden select is the reliable input: a
+  // synthetic click on the combobox does not always open the portal, and the
+  // select's options have the labels the form validates against.
+  function hiddenSelect(kind) {
+    const selects = Array.from(document.querySelectorAll("select"));
+    if (kind === "month") {
+      return selects.find((sel) => /january/i.test(sel.options[0]?.text || ""));
+    }
+    if (kind === "day") {
+      return selects.find((sel) => /^0?1$/.test((sel.options[0]?.text || "").trim()));
+    }
+    if (kind === "year") {
+      return selects.find((sel) => /^\d{4}$/.test((sel.options[0]?.text || "").trim()));
+    }
+    return null;
+  }
+
   async function choose(kind, value, alternates) {
     const target = String(value);
-    const select = triggerFor(kind);
-    if (select && select.tagName === "SELECT") {
-      return setSelect(select, target) && String(select.value) === target;
+    const select = hiddenSelect(kind);
+    if (select) {
+      const wanted = [target, ...(alternates || [])].map((item) =>
+        String(item).trim().toLowerCase()
+      );
+      const option = Array.from(select.options).find(
+        (item) =>
+          wanted.includes(item.text.trim().toLowerCase()) ||
+          wanted.includes(String(item.value).trim().toLowerCase())
+      );
+      if (option && setSelect(select, option.value)) {
+        await sleep(200);
+        if (String(select.value) === String(option.value)) return true;
+      }
     }
 
-    const trigger = select || triggerFor(kind);
+    const trigger = triggerFor(kind);
     if (!trigger) return false;
     const current = nameOf(trigger);
     if (current === target) return true;
@@ -520,21 +549,30 @@ async function uiFinaliseStep(birthday, username, gender, acceptTerms) {
   report.day = await choose("day", DAY, [DAY.padStart(2, "0")]);
   report.year = await choose("year", YEAR, []);
   report.gender = await choose("gender", GENDERS[Number(gender)] || GENDERS[1], []);
-
-  // 4. Continue. Prefer the button inside the open dialog; a page-wide search
-  // can find an unrelated "continue" (cookie banner, help widget).
-  const scope = document.querySelector('[role="dialog"],#modal-dialog') || document;
-  let candidates = Array.from(
-    scope.querySelectorAll('button,[role="button"],input[type="submit"],a')
-  ).filter(shown);
-  if (!candidates.length) {
-    candidates = Array.from(
-      document.querySelectorAll('button,[role="button"],input[type="submit"],a')
-    ).filter(shown);
+  if (!report.gender) {
+    // The compliance form offers Female/Male only; "Unspecified" from the
+    // settings has no control there. Pick the closest visible option.
+    const wanted = (GENDERS[Number(gender)] || "Male").toLowerCase();
+    const buttons = Array.from(document.querySelectorAll('button,[role="button"]')).filter(shown);
+    const hit =
+      buttons.find((el) => nameOf(el).toLowerCase() === wanted) ||
+      buttons.find((el) => /^(female|male|unspecified|prefer not to say)$/i.test(nameOf(el)));
+    if (hit) {
+      report.gender = click(hit);
+    }
   }
+  // Let React react to the selects and gender before looking at the submit
+  // button's disabled state.
+  await sleep(600);
+
+  // 4. Create account. The birthday form is not inside the empty #modal-dialog,
+  // so search the whole page; the submit control is labelled "Create account".
+  const candidates = Array.from(
+    document.querySelectorAll('button,[role="button"],input[type="submit"],a')
+  ).filter(shown);
   const next = candidates.find(
     (el) =>
-      /^(continue|submit|done|next|finish)$/i.test(nameOf(el)) ||
+      /^(create account|continue|submit|done|next|finish)$/i.test(nameOf(el)) ||
       /^(continue|submit|done|next|finish)$/i.test(String(el.value || ""))
   );
   report.nextDisabled = Boolean(next && next.disabled);
@@ -863,11 +901,32 @@ async function awaitSsoSettled(tabId, timeout, shouldStop, log) {
   log(`sso did not settle in time (last: ${shortUrl(last)})`);
 }
 
+// MAIN world. The /sso-complete page sometimes renders a Continue button
+// instead of redirecting on its own. Clicking it is safe; if there is no
+// button the caller simply waits for the redirect.
+function clickSsoContinue() {
+  const visible = (el) => {
+    const rect = el.getBoundingClientRect();
+    return rect.width > 1 && rect.height > 1;
+  };
+  const label = (el) =>
+    `${el.getAttribute("aria-label") || ""} ${el.innerText || ""}`
+      .replace(/\s+/g, " ")
+      .trim();
+  const hit = [...document.querySelectorAll('button,[role="button"],a,input[type="submit"]')]
+    .filter(visible)
+    .find((el) => /^(continue|continue to roblox|go to roblox|ok|done|next)$/i.test(label(el)));
+  if (!hit) return null;
+  try {
+    hit.click();
+    return label(hit).slice(0, 60);
+  } catch (_) {
+    return null;
+  }
+}
+
 async function finaliseOnTab(tabId, timeout, shouldStop, log, options = {}) {
   const landing = (await getTab(tabId).catch(() => null))?.url || "";
-  await api.tabs.update(tabId, { url: HOME });
-  await waitComplete(tabId, Math.min(timeout, 60_000), shouldStop);
-  await sleep(2000);
   log(`finalise from ${shortUrl(landing)}`);
 
   const birthday = options.birthday || "1996-05-15";
@@ -879,6 +938,9 @@ async function finaliseOnTab(tabId, timeout, shouldStop, log, options = {}) {
   let lastDid = "";
   let lastDiag = "";
   let attempts = 0;
+  let homeWaits = 0;
+  let ssoClicks = 0;
+  let lastUrl = "";
 
   while (Date.now() < deadline) {
     if (shouldStop && shouldStop()) throw new Error("stopped");
@@ -886,66 +948,94 @@ async function finaliseOnTab(tabId, timeout, shouldStop, log, options = {}) {
     const tab = await getTab(tabId).catch(() => null);
     if (!tab) throw new Error("finalise tab closed");
     const url = tab.url || "";
+    if (url !== lastUrl) {
+      lastUrl = url;
+      log(`finalise page ${shortUrl(url)}`);
+    }
 
-    // The page redirects itself to /home when the account is usable, so that is
-    // the signal — not the status of any request we made.
-    if (url.includes("/home") && !url.includes("/not-approved")) {
+    // The username/birthday form lives on /not-approved. Never navigate away
+    // from it: that page is the one the site uses to mark the account usable.
+    if (/\/not-approved/.test(url)) {
+      if (attempts >= 20) break;
+      attempts += 1;
+
+      step = await withTimeout(
+        exec(
+          tabId,
+          uiFinaliseStep,
+          [birthday, username, options.gender || 1, options.acceptTerms !== false],
+          "MAIN"
+        ),
+        45_000,
+        "ui finalise"
+      ).catch((error) => {
+        log(`ui finalise step failed: ${error.message || error}`);
+        return null;
+      });
+
+      if (step) {
+        if (step.blocked) {
+          log(`ui finalise blocked: ${step.blocked}`);
+          break;
+        }
+        lastText = step.text || lastText;
+        const did = ["agree", "username", "month", "day", "year", "gender", "next"]
+          .filter((key) => step[key])
+          .join(", ");
+        if (did && did !== lastDid) {
+          lastDid = did;
+          log(`ui finalise: ${did}`);
+        }
+        if (step.usernameReverted) {
+          log("ui finalise: chosen username was rejected — kept Roblox's generated name");
+        }
+        if (!step.next) {
+          const diag =
+            `ui finalise stuck · ${step.controls || "no birthday controls"}` +
+            `${step.nextDisabled ? " · continue disabled" : ""}` +
+            ` · buttons: ${step.buttons || "none"}`;
+          if (diag !== lastDiag) {
+            lastDiag = diag;
+            log(diag);
+          }
+        }
+      }
+      await sleep(2200);
+      continue;
+    }
+
+    // Already signed in and finished provisioning: /home is the success page.
+    // Verify the session here instead of running the birthday form on it.
+    if (/\/home/.test(url)) {
       const session = await exec(tabId, verifySession, [], "MAIN").catch(() => null);
       if (session && session.status === 200) {
         log(`ui finalise · session 200 · ${session.name || session.id}`);
         return { session, ui: step, username: session.name || username || null };
       }
-      if (session) log(`ui finalise · at /home but session ${session.status}`);
+      homeWaits += 1;
+      if (homeWaits === 1 || homeWaits % 8 === 0) {
+        log(`finalise: at /home, session ${session?.status ?? 0} — waiting for provisioning`);
+      }
+      await sleep(2500);
+      continue;
     }
 
-    if (attempts >= 20) break;
-    attempts += 1;
-
-    step = await withTimeout(
-      exec(
-        tabId,
-        uiFinaliseStep,
-        [birthday, username, options.gender || 1, options.acceptTerms !== false],
-        "MAIN"
-      ),
-      45_000,
-      "ui finalise"
-    ).catch((error) => {
-      log(`ui finalise step failed: ${error.message || error}`);
-      return null;
-    });
-
-    if (step) {
-      if (step.blocked) {
-        log(`ui finalise blocked: ${step.blocked}`);
-        break;
-      }
-      lastText = step.text || lastText;
-      const did = ["agree", "username", "month", "day", "year", "gender", "next"]
-        .filter((key) => step[key])
-        .join(", ");
-      if (did && did !== lastDid) {
-        lastDid = did;
-        log(`ui finalise: ${did}`);
-      }
-      if (step.usernameReverted) {
-        log("ui finalise: chosen username was rejected — kept Roblox's generated name");
-      }
-      if (!step.next) {
-        // The page is not moving because something is missing or disabled. Say
-        // exactly which control holds which value, once, instead of retrying
-        // silently until the budget runs out.
-        const diag =
-          `ui finalise stuck · ${step.controls || "no birthday controls"}` +
-          `${step.nextDisabled ? " · continue disabled" : ""}` +
-          ` · buttons: ${step.buttons || "none"}`;
-        if (diag !== lastDiag) {
-          lastDiag = diag;
-          log(diag);
+    // The SSO callback can park here for a moment. Give it a Continue click
+    // and, more importantly, do not navigate away while it provisions.
+    if (/sso-complete/.test(url)) {
+      if (ssoClicks < 3) {
+        const hit = await exec(tabId, clickSsoContinue, [], "MAIN").catch(() => null);
+        if (hit) {
+          ssoClicks += 1;
+          log(`sso-complete: clicked ${hit}`);
         }
       }
+      await sleep(1500);
+      continue;
     }
-    await sleep(2200);
+
+    // Blank or unknown page: wait for the next navigation.
+    await sleep(1500);
   }
 
   const session = await exec(tabId, verifySession, [], "MAIN").catch(() => null);
@@ -1036,6 +1126,13 @@ async function primeGoogleSession(tabId, identity, timeout, shouldStop, storeId,
       }
       if (/type the text you hear or see|captcha image/i.test(body)) {
         log("prime: captcha on direct sign-in — falling back to the SSO lane");
+        return false;
+      }
+      // The risk-based "Verify it's you" phone page cannot be answered here. The
+      // SSO lane below can still use a backup code, and it takes seconds rather
+      // than waiting out the prime budget.
+      if (/challenge\/iap|enter a phone number to get a text message/i.test(`${url} ${body}`)) {
+        log("prime: phone verification gate — falling back to the SSO lane");
         return false;
       }
     }

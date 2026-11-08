@@ -534,6 +534,21 @@
       return;
     }
 
+    // The Authenticator app landing page: Google shows a "Set up authenticator"
+    // button before it reveals the QR/setup key. Without this click the wizard
+    // never starts and the prime gives up with no secret.
+    if (/authenticator app/i.test(body) && /set up authenticator/i.test(body)) {
+      act("setup-authenticator", () => {
+        const hit = clickByText(
+          ["set up authenticator"],
+          'button,[role="button"],a'
+        );
+        if (hit) once("setup-authenticator", `authenticator setup -> ${hit}`);
+        return hit;
+      });
+      return;
+    }
+
     // Google Workspace's "Don't get locked out" warning. It appears on a direct
     // sign-in when the tenant is about to enforce 2SV and is the one screen that
     // offers enrollment before the deadline. "Do this later" is a trap: it lands
