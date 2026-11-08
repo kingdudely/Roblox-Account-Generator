@@ -12,7 +12,9 @@ export const DEFAULT_SETTINGS = {
   // finalise defaults
   usernameMode: "generated",
   birthday: "1996-05-15",
+  randomBirthday: false,
   gender: 1,
+  randomGender: false,
   acceptTerms: true,
 };
 

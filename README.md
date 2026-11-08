@@ -64,8 +64,8 @@ The runner opens on install. If it does not, click the toolbar icon and choose
    over HTTP, and accepts the updated Roblox terms when the setting is on.
 4. **Settings** — choose whether Roblox keeps its generated username or the run
    sends one from the local generator, set the birthday and gender written at
-   finalise, turn the automatic terms acceptance on or off, and tune identity
-   concurrency.
+   finalise (tick **random** under either to roll a fresh value per identity),
+   turn the automatic terms acceptance on or off, and tune identity concurrency.
 
 Accounts are written to extension storage the moment the cookie lands. Export is
 a mirror; closing the tab loses nothing.

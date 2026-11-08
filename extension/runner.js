@@ -140,6 +140,34 @@ function renderStats() {
   setText("batch-hint", state.keys.length ? `${state.keys.length} key(s) loaded` : "add a key first");
 }
 
+// ------------------------------------------------------------ random profile
+
+function randomBirthday() {
+  const age = 18 + Math.floor(Math.random() * 28); // 18–45
+  const year = new Date().getFullYear() - age;
+  const month = Math.floor(Math.random() * 12);
+  const days = new Date(year, month + 1, 0).getDate();
+  const day = 1 + Math.floor(Math.random() * days);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${year}-${pad(month + 1)}-${pad(day)}`;
+}
+
+function randomGender() {
+  return [1, 2, 3][Math.floor(Math.random() * 3)];
+}
+
+// Random rolls are stored on the identity so a retry finalises with the same
+// numbers. A fixed setting always wins over whatever an older row carries.
+function profileFor(identity, settings) {
+  const birthday =
+    (settings.randomBirthday
+      ? identity?.birthday || randomBirthday()
+      : settings.birthday) || "1996-05-15";
+  const gender =
+    (settings.randomGender ? identity?.gender || randomGender() : settings.gender) || 1;
+  return { birthday, gender };
+}
+
 function renderSettings() {
   const settings = state.settings;
   $("count").value = settings.count;
@@ -159,10 +187,24 @@ function renderSettings() {
   if (usernameMode) usernameMode.value = settings.usernameMode === "ours" ? "ours" : "generated";
 
   const birthday = $("birthday");
-  if (birthday) birthday.value = settings.birthday || "1996-05-15";
+  if (birthday) {
+    birthday.value = settings.birthday || "1996-05-15";
+    birthday.disabled = Boolean(settings.randomBirthday);
+  }
+  const birthdayField = $("birthday-field");
+  if (birthdayField) birthdayField.classList.toggle("is-random", Boolean(settings.randomBirthday));
+  const randomBirthdayBox = $("random-birthday");
+  if (randomBirthdayBox) randomBirthdayBox.checked = Boolean(settings.randomBirthday);
 
   const gender = $("gender");
-  if (gender) gender.value = String(settings.gender || 1);
+  if (gender) {
+    gender.value = String(settings.gender || 1);
+    gender.disabled = Boolean(settings.randomGender);
+  }
+  const genderField = $("gender-field");
+  if (genderField) genderField.classList.toggle("is-random", Boolean(settings.randomGender));
+  const randomGenderBox = $("random-gender");
+  if (randomGenderBox) randomGenderBox.checked = Boolean(settings.randomGender);
 
   const acceptTerms = $("accept-terms");
   if (acceptTerms) acceptTerms.checked = settings.acceptTerms !== false;
@@ -760,6 +802,8 @@ function planIdentities(draft, key, count) {
   const existing = draft.identities.filter((identity) => identity.key_id === key.id);
   const taken = new Set(existing.map((identity) => identity.email.toLowerCase()));
   const ours = draft.settings?.usernameMode === "ours";
+  const randBirthday = Boolean(draft.settings?.randomBirthday);
+  const randGender = Boolean(draft.settings?.randomGender);
   const usedNames = new Set(
     draft.identities.map((identity) => identity.roblox_username).filter(Boolean)
   );
@@ -791,6 +835,8 @@ function planIdentities(draft, key, count) {
       last: fields.last,
       password: fields.password,
       roblox_username: robloxUsername,
+      birthday: randBirthday ? randomBirthday() : draft.settings?.birthday || "1996-05-15",
+      gender: randGender ? randomGender() : draft.settings?.gender || 1,
       status: "planned",
       error: null,
       created_at: new Date().toISOString(),
@@ -1000,9 +1046,11 @@ async function start({ preflight = false } = {}) {
   await remember(
     `username: ${
       state.settings.usernameMode === "ours" ? "our generator" : "Roblox generated"
-    } · birthday ${state.settings.birthday || "1996-05-15"} · terms ${
-      state.settings.acceptTerms !== false ? "auto-accept" : "manual"
-    }`,
+    } · birthday ${
+      state.settings.randomBirthday ? "random" : state.settings.birthday || "1996-05-15"
+    } · gender ${
+      state.settings.randomGender ? "random" : state.settings.gender || 1
+    } · terms ${state.settings.acceptTerms !== false ? "auto-accept" : "manual"}`,
     "info"
   );
 
@@ -1078,8 +1126,7 @@ async function runBatch(queue, preflight) {
       });
       renderQueue();
 
-      // The username is decided before the Roblox tab opens. In generated mode
-      // the finalise call omits username and Roblox keeps the SSO-generated one.
+      // Username, birthday, and gender are fixed before the Roblox tab opens.
       const usernameMode = settings.usernameMode === "ours" ? "ours" : "generated";
       let requestedUsername = usernameMode === "ours" ? identity.roblox_username || "" : "";
       if (usernameMode === "ours" && !requestedUsername) {
@@ -1091,7 +1138,27 @@ async function runBatch(queue, preflight) {
         });
       }
 
+      // Random values are rolled per identity and stored on the row, so a
+      // manual finalise later reuses the same birthday and gender.
+      const profile = profileFor(identity, settings);
+      if (identity.birthday !== profile.birthday || identity.gender !== profile.gender) {
+        identity.birthday = profile.birthday;
+        identity.gender = profile.gender;
+        await mutate((draft) => {
+          const row = draft.identities.find((entry) => entry.id === identity.id);
+          if (row) {
+            row.birthday = profile.birthday;
+            row.gender = profile.gender;
+          }
+        });
+      }
+
       await remember(`[lane ${laneIndex + 1}] ${identity.email}`, "step");
+      await remember(
+        `profile: ${profile.birthday} · gender ${profile.gender}` +
+          (settings.randomBirthday || settings.randomGender ? " (random)" : ""),
+        "info"
+      );
 
       try {
         // Backup codes are minted before the tab opens: they are the fallback
@@ -1122,8 +1189,8 @@ async function runBatch(queue, preflight) {
             log: (text) => remember(text, "info"),
             otpFor: (email) => liveOtp.get(String(email || "").toLowerCase()) || "",
             username: requestedUsername,
-            birthday: settings.birthday || "1996-05-15",
-            gender: settings.gender || 1,
+            birthday: profile.birthday,
+            gender: profile.gender,
             acceptTerms: settings.acceptTerms !== false,
             onSession: async (cookie) => {
               provisional = {
@@ -1274,11 +1341,22 @@ async function finaliseAccount(account) {
       });
     }
 
+    const profile = profileFor(identity, settings);
+    if (identity && (identity.birthday !== profile.birthday || identity.gender !== profile.gender)) {
+      await mutate((draft) => {
+        const row = draft.identities.find((entry) => entry.id === account.identity_id);
+        if (row) {
+          row.birthday = profile.birthday;
+          row.gender = profile.gender;
+        }
+      });
+    }
+
     const result = await retryFinalise(tab.id, 60, () => false, (text) =>
       remember(text, "info"), {
         username: requestedUsername,
-        birthday: settings.birthday || "1996-05-15",
-        gender: settings.gender || 1,
+        birthday: profile.birthday,
+        gender: profile.gender,
         acceptTerms: settings.acceptTerms !== false,
       }
     );
@@ -2048,10 +2126,24 @@ function wire() {
     await refresh();
   });
 
+  $("random-birthday").addEventListener("change", async (event) => {
+    await mutate((draft) => {
+      draft.settings.randomBirthday = Boolean(event.target.checked);
+    });
+    await refresh();
+  });
+
   $("gender").addEventListener("change", async (event) => {
     const value = [1, 2, 3].includes(Number(event.target.value)) ? Number(event.target.value) : 1;
     await mutate((draft) => {
       draft.settings.gender = value;
+    });
+    await refresh();
+  });
+
+  $("random-gender").addEventListener("change", async (event) => {
+    await mutate((draft) => {
+      draft.settings.randomGender = Boolean(event.target.checked);
     });
     await refresh();
   });

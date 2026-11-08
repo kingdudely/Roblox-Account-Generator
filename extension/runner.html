@@ -512,18 +512,26 @@
                     <option value="ours">Our generator</option>
                   </select>
                 </label>
-                <label class="field">
+                <div class="field" id="birthday-field">
                   <span>Birthday</span>
                   <input id="birthday" type="date" value="1996-05-15" />
-                </label>
-                <label class="field">
+                  <label class="random-toggle">
+                    <input id="random-birthday" type="checkbox" />
+                    <span>random</span>
+                  </label>
+                </div>
+                <div class="field" id="gender-field">
                   <span>Gender</span>
                   <select id="gender">
                     <option value="1">Unspecified</option>
                     <option value="2">Male</option>
                     <option value="3">Female</option>
                   </select>
-                </label>
+                  <label class="random-toggle">
+                    <input id="random-gender" type="checkbox" />
+                    <span>random</span>
+                  </label>
+                </div>
               </div>
               <label class="field check">
                 <input id="accept-terms" type="checkbox" checked />
@@ -532,8 +540,10 @@
               <p class="note">
                 <b>Roblox generated</b> keeps the name assigned during SSO signup.
                 <b>Our generator</b> sends a random name from the local word lists with the
-                finalise call and retries if the name is taken. The terms option performs the
-                same acceptance POST as the <b>I Agree</b> button on
+                finalise call and retries if the name is taken. <b>Random</b> under birthday or
+                gender rolls a fresh value per identity instead of reusing the field:
+                birthdays land between 18 and 45, gender picks from unspecified, male, or female.
+                The terms option performs the same acceptance POST as the <b>I Agree</b> button on
                 <span class="mono">/not-approved</span>; turn it off if you want to review the
                 updated agreement yourself.
               </p>
