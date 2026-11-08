@@ -2286,7 +2286,7 @@ function renderSetup() {
       "duck-saved",
       duck.token && duck.subdomain
         ? `saved · ${duck.subdomain}.duckdns.org`
-        : "not saved yet — step 2.6 needs these"
+        : "not saved yet — step 2 needs these"
     );
   }
 }

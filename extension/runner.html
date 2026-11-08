@@ -245,7 +245,7 @@
                   <li>Sign in at <a href="https://www.duckdns.org" target="_blank" rel="noopener noreferrer">duckdns.org</a> and add a subdomain.</li>
                   <li>Copy the account token &mdash; one token covers every subdomain.</li>
                   <li>
-                    Save them here. <b>Step 2.6</b> uses them to write the verification record.
+                    Save them here. Step 2 uses them to write the verification record.
                     <details class="why"><summary>There is no DNS editor</summary>
                       TXT records exist only behind DuckDNS's API. The fields below are that API, so
                       you never touch a dashboard.
@@ -289,23 +289,23 @@
               <div class="step-body">
                 <ol class="step-actions">
                   <li>
-                    <b>2.1</b> Open the Cloud Identity Free signup:
+                    Open the Cloud Identity Free signup:
                     <a href="https://workspace.google.com/gcpidentity/signup?sku=identitybasic" target="_blank" rel="noopener noreferrer">workspace.google.com/gcpidentity/signup</a>.
                   </li>
                   <li>
-                    <b>2.2</b> <b>About you</b> &mdash; your name and a mailbox you still read.
+                    <b>About you</b> &mdash; your name and a mailbox you still read.
                     <details class="why"><summary>Why not the tenant domain</summary>
                       This is the recovery address, so it must exist outside the tenant. A personal
                       Gmail is what the form expects.
                     </details>
                   </li>
-                  <li><b>2.3</b> <b>About your business</b> &mdash; any company name, and your country.</li>
+                  <li><b>About your business</b> &mdash; any company name, and your country.</li>
                   <li>
-                    <b>2.4</b> <b>Domain</b> &mdash; <span class="mono">&lt;sub&gt;.duckdns.org</span>,
+                    <b>Domain</b> &mdash; <span class="mono">&lt;sub&gt;.duckdns.org</span>,
                     using the subdomain from step 1.
                   </li>
                   <li>
-                    <b>2.5</b> <b>Create the admin account</b> &mdash; username and password. This is
+                    <b>Create the admin account</b> &mdash; username and password. This is
                     <span class="mono">admin@&lt;sub&gt;.duckdns.org</span>, the tenant's first user.
                     <details class="why"><summary>If the form stops at a QR</summary>
                       Google is verifying the device. Use the phone gate below: it reads the number and
@@ -344,7 +344,7 @@
                     </div>
                   </li>
                   <li>
-                    <b>2.6</b> <b>Verify the domain</b> &mdash; Google shows a
+                    <b>Verify the domain</b> &mdash; Google shows a
                     <span class="mono">google-site-verification=&hellip;</span> value. Paste it below,
                     press <b>Write record</b>, then <b>Verify</b> in the signup tab.
                     <div class="helper">
@@ -369,7 +369,7 @@
                       </p>
                     </div>
                   </li>
-                  <li><b>2.7</b> Accept the Cloud Identity Agreement. You land in the Google Cloud console with the tenant live.</li>
+                  <li>Accept the Cloud Identity Agreement. You land in the Google Cloud console with the tenant live.</li>
                 </ol>
                 <p class="note">
                   Already have a Workspace tenant? Add Cloud Identity Free from
@@ -398,15 +398,15 @@
               <div class="step-body">
                 <ol class="step-actions">
                   <li>
-                    <b>3.1</b> Sign in as the admin and open
+                    Sign in as the admin and open
                     <a href="https://myaccount.google.com/signinoptions/two-step-verification" target="_blank" rel="noopener noreferrer">myaccount.google.com &rarr; Security &rarr; 2-Step Verification</a>.
                   </li>
                   <li>
-                    <b>3.2</b> Choose <b>Authenticator app</b>, click <b>Can't scan it?</b>, and paste
+                    Choose <b>Authenticator app</b>, click <b>Can't scan it?</b>, and paste
                     the secret below. The live code finishes Google's setup.
                   </li>
                   <li>
-                    <b>3.3</b> In
+                    In
                     <a href="https://admin.google.com/ac/security/2sv" target="_blank" rel="noopener noreferrer">Admin console &rarr; Security &rarr; Authentication &rarr; 2-Step Verification</a>,
                     set <b>Enforcement On</b> and <b>Methods</b> to
                     <i>Any except verification codes via text, phone call</i>.
@@ -480,25 +480,25 @@
               <div class="step-body">
                 <ol class="step-actions">
                   <li>
-                    <b>4.1</b> Create a project inside the organization:
+                    Create a project inside the organization:
                     <a href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noopener noreferrer">console.cloud.google.com/projectcreate</a>.
                   </li>
                   <li>
-                    <b>4.2</b> Enable the Admin SDK:
+                    Enable the Admin SDK:
                     <a href="https://console.cloud.google.com/apis/library/admin.googleapis.com" target="_blank" rel="noopener noreferrer">admin.googleapis.com</a>.
                   </li>
                   <li>
-                    <b>4.3</b> OAuth consent screen &rarr; <b>Internal</b>, with scopes
+                    OAuth consent screen &rarr; <b>Internal</b>, with scopes
                     <span class="mono">admin.directory.user</span>,
                     <span class="mono">admin.directory.user.security</span> and
                     <span class="mono">admin.directory.domain.readonly</span>.
                   </li>
                   <li>
-                    <b>4.4</b> Credentials &rarr; <b>Create credentials</b> &rarr;
+                    Credentials &rarr; <b>Create credentials</b> &rarr;
                     <b>OAuth client ID</b> &rarr; <b>Desktop app</b> &rarr; download the JSON.
                   </li>
                   <li>
-                    <b>4.5</b> Paste that JSON into <b>Keys &rarr; Create a key here</b> and authorize.
+                    Paste that JSON into <b>Keys &rarr; Create a key here</b> and authorize.
                     The domain is detected afterwards, so leave the domain field blank.
                   </li>
                 </ol>
