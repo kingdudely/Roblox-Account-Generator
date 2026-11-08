@@ -3,7 +3,6 @@
 // is what lets several of them exist in one browser.
 
 import { api, isFirefox, sleep, withTimeout } from "./api.js";
-import { makeUsername } from "./names.js";
 
 export const SIGNUP = "https://www.roblox.com/CreateAccount";
 export const HOME = "https://www.roblox.com/home";
@@ -341,181 +340,182 @@ function activateSignupCta(x, y) {
   return captured;
 }
 
-// MAIN world, on a roblox.com page. HttpOnly cookies ride along automatically.
-async function upgradeAndValidate(birthday, username, gender) {
-  async function validate() {
-    try {
-      const response = await fetch("https://users.roblox.com/v1/users/authenticated", {
-        credentials: "include",
-        headers: { accept: "application/json" },
-      });
-      const text = await response.text();
-      const out = { status: response.status, body: text.slice(0, 300) };
-      try {
-        const data = JSON.parse(text);
-        out.id = data.id;
-        out.name = data.name;
-      } catch (_) {
-        // 403 "User is moderated" is plain text
-      }
-      return out;
-    } catch (error) {
-      return { status: 0, body: String(error).slice(0, 200) };
-    }
-  }
+// MAIN world, on the /not-approved page. The UI is authoritative here: the same
+// operations sent over HTTP can answer 200 while the account stays pending, but
+// clicking through always moves it. Idempotent — the lane calls this in a loop
+// until the page leaves /not-approved.
+async function uiFinaliseStep(birthday, username, gender, acceptTerms) {
+  const date = String(birthday || "1996-05-15");
+  const [year, month, day] = date.split("-").map((part) => Number(part));
+  const MONTHS = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+  ];
+  const GENDERS = { 1: "Unspecified", 2: "Male", 3: "Female" };
 
-  let session = await validate();
-  if (session.status === 200) {
-    return {
-      upgrade: { status: 0, body: "already live" },
-      session,
-      url: location.href,
-      username: username || null,
-    };
-  }
-
-  const headers = { "content-type": "application/json;charset=UTF-8" };
-  const body = {
-    upgradeType: "OAuth",
-    birthday: `${birthday}T00:00:00.000Z`,
-    gender: [1, 2, 3].includes(Number(gender)) ? Number(gender) : 1,
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const shown = (el) => {
+    if (!el) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 1 && rect.height > 1;
   };
-  if (username) body.username = username;
-  const payload = JSON.stringify(body);
-
-  async function post(token) {
-    return fetch("https://auth.roblox.com/v1/account/upgrade", {
-      method: "POST",
-      credentials: "include",
-      headers: token ? { ...headers, "x-csrf-token": token } : headers,
-      body: payload,
-    });
-  }
-
-  let upgrade = { status: 0, body: "" };
-  try {
-    let response = await post(null);
-    if (response.status === 403) {
-      const token = response.headers.get("x-csrf-token");
-      if (token) response = await post(token);
-    }
-    const text = (await response.text()).slice(0, 500);
-    let code = null;
+  const nameOf = (el) =>
+    String(el.getAttribute("aria-label") || el.innerText || "").replace(/\s+/g, " ").trim();
+  const click = (el) => {
+    if (!el) return false;
     try {
-      const data = JSON.parse(text);
-      code = data?.errors?.[0]?.code ?? data?.code ?? null;
+      el.click();
+      return true;
     } catch (_) {
-      // plain-text error
+      return false;
     }
-    upgrade = { status: response.status, code, body: text };
-  } catch (error) {
-    upgrade = { status: 0, body: String(error).slice(0, 200) };
+  };
+  const findButton = (pattern, scope) =>
+    Array.from((scope || document).querySelectorAll('button,[role="button"],a'))
+      .filter(shown)
+      .find((el) => pattern.test(nameOf(el)));
+
+  const report = {
+    agree: false,
+    username: false,
+    month: false,
+    day: false,
+    year: false,
+    gender: false,
+    next: false,
+    text: "",
+  };
+
+  // 1. "Updated Agreements" modal. It can mount a moment after the page.
+  const dialog = document.querySelector("#modal-dialog,[role=dialog]") || document;
+  const agree =
+    findButton(/^(i agree|agree|accept|got it)$/i, dialog) ||
+    findButton(/^(i agree|agree|accept|got it)$/i);
+  if (agree) {
+    if (acceptTerms !== false) {
+      report.agree = click(agree);
+      await sleep(1000);
+    } else {
+      report.blocked = "updated-agreements modal left open by settings";
+    }
   }
 
-  // A fresh upgrade can take a moment to propagate to users.roblox.com.
-  for (let attempt = 0; attempt < 4 && session.status !== 200; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    session = await validate();
+  // 2. Username. The page pre-fills the name Roblox generated; it is editable,
+  // which is what keeps "Our generator" working without the upgrade endpoint.
+  const wanted = String(username || "").trim();
+  if (wanted) {
+    const inputs = Array.from(document.querySelectorAll("input"))
+      .filter(shown)
+      .filter((el) => {
+        const type = String(el.type || "text").toLowerCase();
+        return type === "text" || type === "";
+      });
+    const named = inputs.find((el) =>
+      /user/i.test(`${el.name} ${el.id} ${el.getAttribute("aria-label") || ""}`)
+    );
+    const field = named || (inputs.length === 1 ? inputs[0] : null);
+    if (field && field.value !== wanted) {
+      try {
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+        setter.call(field, wanted);
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+        field.dispatchEvent(new Event("change", { bubbles: true }));
+        field.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "a" }));
+        field.blur();
+        report.username = true;
+      } catch (_) {
+        // leave Roblox's name in place rather than fail the step
+      }
+    }
   }
 
-  const usernameTaken =
-    Boolean(username) && upgrade.status === 400 && [9, 11, 12].includes(upgrade.code);
+  // 3. Birthday. The <select> elements on this page are hidden fallbacks; the
+  // real controls are Radix comboboxes whose options mount in a portal.
+  async function choose(kind, value, alternates) {
+    const target = String(value);
+    const trigger = Array.from(document.querySelectorAll('[role="combobox"],button')).find(
+      (el) => shown(el) && String(el.getAttribute("aria-label") || "").toLowerCase() === kind
+    );
+    if (!trigger) return false;
+    if (String(trigger.innerText || "").trim() === target) return true;
+    click(trigger);
+    await sleep(400);
+    // Radix renders the items as buttons with data-radix-collection-item, not
+    // as [role="option"] — the docs in SSO_SETUP have the measured detail.
+    const options = Array.from(
+      document.querySelectorAll(
+        '[role="option"], [data-radix-collection-item], [role="listbox"] li, [role="listbox"] button'
+      )
+    ).filter(shown);
+    const pool = [target, ...(alternates || [])];
+    const hit = pool
+      .map((want) => options.find((el) => String(el.innerText || "").trim() === want))
+      .find(Boolean);
+    if (!hit) return false;
+    click(hit);
+    await sleep(300);
+    return true;
+  }
 
-  return { upgrade, session, url: location.href, username: username || null, usernameTaken };
+  report.month = await choose("month", MONTHS[Math.max(0, month - 1)], [String(month)]);
+  report.day = await choose("day", String(day), [String(day).padStart(2, "0")]);
+  report.year = await choose("year", String(year), []);
+  report.gender = await choose("gender", GENDERS[Number(gender)] || GENDERS[1], []);
+
+  // A select-based layout appears on some rollouts; setting it is harmless when
+  // the comboboxes already handled it.
+  for (const [label, value] of [
+    ["Month", MONTHS[Math.max(0, month - 1)]],
+    ["Day", String(day)],
+    ["Year", String(year)],
+  ]) {
+    const select = document.querySelector(`select[aria-label="${label}"], select[name="${label}"]`);
+    if (select && select.value !== value) {
+      select.value = value;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  }
+
+  // 4. Continue.
+  const next = findButton(/^(continue|submit|done|next|finish)$/i);
+  if (next) {
+    report.next = click(next);
+    await sleep(1200);
+  }
+
+  report.text = String(document.body ? document.body.innerText : "")
+    .replace(/\s+/g, " ")
+    .slice(0, 220);
+  return report;
 }
 
-// The /not-approved page also mounts an "Updated Agreements" modal. It is not
-// part of /v1/account/upgrade; accepting through this endpoint plus the page's
-// local cache flag is what makes the modal stop appearing on later loads.
-async function acceptUserAgreements() {
-  const base = "https://apis.roblox.com/user-agreements";
-  const stamp = () => new Date().toISOString();
-  const cacheAccepted = () => {
-    try {
-      localStorage.setItem(
-        "Roblox.UserAgreements",
-        JSON.stringify({
-          doesUserNeedToAcceptAgreements: false,
-          lastFetchTimestamp: stamp(),
-        })
-      );
-    } catch (_) {
-      // storage disabled; the server-side acceptance still stands
-    }
-  };
-
+// MAIN world. Read-only proof that the session is usable; this is the only HTTP
+// left in the finalise path.
+async function verifySession() {
   try {
-    const listed = await fetch(`${base}/v1/agreements-resolution/web`, {
+    const response = await fetch("https://users.roblox.com/v1/users/authenticated", {
       credentials: "include",
       headers: { accept: "application/json" },
     });
-    const listText = await listed.text();
-    if (!listed.ok) {
-      return { listed: 0, accepted: 0, status: listed.status, body: listText.slice(0, 300) };
-    }
-
-    let agreements = [];
+    const text = await response.text();
+    let data = null;
     try {
-      agreements = JSON.parse(listText);
+      data = JSON.parse(text);
     } catch (_) {
-      agreements = [];
+      // 403 "User is moderated" is plain text
     }
-    if (!Array.isArray(agreements) || !agreements.length) {
-      cacheAccepted();
-      return { listed: 0, accepted: 0, status: 200, body: "" };
-    }
-
-    const payload = JSON.stringify({
-      acceptances: agreements.map((agreement) => ({ agreementId: agreement.id })),
-    });
-    const post = (token) =>
-      fetch(`${base}/v1/acceptances`, {
-        method: "POST",
-        credentials: "include",
-        headers: token
-          ? {
-              accept: "application/json",
-              "content-type": "application/json;charset=UTF-8",
-              "x-csrf-token": token,
-            }
-          : {
-              accept: "application/json",
-              "content-type": "application/json;charset=UTF-8",
-            },
-        body: payload,
-      });
-
-    let response = await post(null);
-    if (response.status === 403) {
-      const token = response.headers.get("x-csrf-token");
-      if (token) response = await post(token);
-    }
-    const body = (await response.text()).slice(0, 500);
-    let accepted = false;
-    if (response.ok) {
-      accepted = true;
-      try {
-        const data = JSON.parse(body);
-        if (Array.isArray(data?.results)) {
-          accepted = data.results.every((result) => Number(result.errorCode) === 0);
-        }
-      } catch (_) {
-        // a 200 with an unreadable body is still a successful acceptance
-      }
-    }
-    if (accepted) cacheAccepted();
-
     return {
-      listed: agreements.length,
-      accepted: accepted ? agreements.length : 0,
       status: response.status,
-      body,
+      id: data?.id ?? null,
+      name: data?.name ?? null,
+      body: text.slice(0, 200),
     };
   } catch (error) {
-    return { listed: 0, accepted: 0, status: 0, body: String(error).slice(0, 200) };
+    return { status: 0, id: null, name: null, body: String(error).slice(0, 200) };
   }
 }
 
+// ---------------------------------------------------------------- sign-in flow
 // ---------------------------------------------------------------- sign-in flow
 
 async function waitForSignup(tabId, storeId, timeout, shouldStop, log) {
@@ -773,135 +773,76 @@ async function awaitSsoSettled(tabId, timeout, shouldStop, log) {
   log(`sso did not settle in time (last: ${shortUrl(last)})`);
 }
 
-// Hitting SSO init inside the same container rides the Google session that is
-// already there, so this is a silent round-trip — no credentials, no form. If
-// Google answers with an interactive page instead, the session is gone and we
-// stop rather than pretend.
-async function resignIn(tabId, timeout, shouldStop, log) {
-  try {
-    await api.tabs.update(tabId, { url: SSO_INIT });
-  } catch (_) {
-    return false;
-  }
-  const deadline = Date.now() + Math.min(timeout, 90_000);
-  while (Date.now() < deadline) {
-    if (shouldStop && shouldStop()) return false;
-    await sleep(1500);
-    const tab = await getTab(tabId).catch(() => null);
-    if (!tab) return false;
-    const url = tab.url || "";
-    if (/accounts\.google\.com/.test(url)) {
-      log("re-auth hit an interactive Google page — the container session is gone");
-      return false;
-    }
-    if (/not-approved|\/home|sso-complete/.test(url)) {
-      log(`re-auth landed on ${shortUrl(url)}`);
-      return true;
-    }
-  }
-  return false;
-}
-
 async function finaliseOnTab(tabId, timeout, shouldStop, log, options = {}) {
   const landing = (await getTab(tabId).catch(() => null))?.url || "";
   await api.tabs.update(tabId, { url: HOME });
   await waitComplete(tabId, Math.min(timeout, 60_000), shouldStop);
-  await sleep(2500);
+  await sleep(2000);
   log(`finalise from ${shortUrl(landing)}`);
 
-  const acceptTerms = options.acceptTerms !== false;
-  let agreement = null;
-  if (acceptTerms) {
-    try {
-      agreement = await withTimeout(
-        exec(tabId, acceptUserAgreements, [], "MAIN"),
-        30_000,
-        "roblox agreements"
-      );
-      if (agreement) {
-        log(
-          `agreements ${agreement.listed} listed · accept ${agreement.status}` +
-            (agreement.accepted ? ` (${agreement.accepted} accepted)` : "") +
-            (agreement.status === 200 && !agreement.accepted ? " (not all accepted)" : "") +
-            (agreement.status === 200 ? "" : ` (${agreement.body || "no body"})`)
-        );
-      }
-    } catch (error) {
-      log(`agreements failed: ${error.message || error}`);
-    }
-  }
-
-  let username = options.username || "";
   const birthday = options.birthday || "1996-05-15";
+  const username = options.username || "";
+  const budget = Math.min(timeout, 150_000);
+  const deadline = Date.now() + budget;
+  let step = null;
+  let lastText = "";
+  let attempts = 0;
 
-  const attemptUpgrade = async () => {
-    let out = null;
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      out = await withTimeout(
-        exec(tabId, upgradeAndValidate, [birthday, username, options.gender || 1], "MAIN"),
-        60_000,
-        "roblox finalise"
-      );
-      if (!out) throw new Error("finalise returned nothing");
-      log(
-        `upgrade ${out.upgrade.status}` +
-          (out.upgrade.code ? `/${out.upgrade.code}` : "") +
-          ` · session ${out.session.status} · ${shortUrl(out.url)}`
-      );
-      // The body is the only place Roblox says *why*: "User is moderated" vs a
-      // validation error vs a dead session all arrive as a status otherwise.
-      if (out.upgrade.body) log(`upgrade body: ${String(out.upgrade.body).slice(0, 240)}`);
-      if (out.session.status === 200) break;
-      if (!out.usernameTaken || attempt >= 3) break;
-      username = makeUsername(attempt + 1);
-      log(`username ${username} rejected — retrying`);
-    }
-    return out;
-  };
+  while (Date.now() < deadline) {
+    if (shouldStop && shouldStop()) throw new Error("stopped");
 
-  let result = await attemptUpgrade();
-  if (!result) throw new Error("finalise returned nothing");
+    const tab = await getTab(tabId).catch(() => null);
+    if (!tab) throw new Error("finalise tab closed");
+    const url = tab.url || "";
 
-  // "User is moderated" on a session that is otherwise valid is the fresh
-  // account not having been provisioned yet. Signing in again completes it, and
-  // the Google session is already in this container, so it costs one round-trip.
-  const moderated = /moderat/i.test(String(result.upgrade.body || ""));
-  if (
-    result.session.status !== 200 &&
-    moderated &&
-    typeof options.resignIn === "function" &&
-    options.retryModerated !== false
-  ) {
-    log("moderated at finalise — re-running SSO in this container");
-    if (await options.resignIn()) {
-      await waitComplete(tabId, Math.min(timeout, 45_000), shouldStop).catch(() => {});
-      await sleep(2000);
-      result = await attemptUpgrade();
-    }
-  }
-
-  if (result.session.status === 200) {
-    if (acceptTerms) {
-      // Run the agreement call once more after the page's own checker has
-      // settled: its fetch can overwrite the local cache flag we set earlier.
-      try {
-        const retry = await withTimeout(
-          exec(tabId, acceptUserAgreements, [], "MAIN"),
-          30_000,
-          "roblox agreements retry"
-        );
-        if (retry) log(`agreements retry · accept ${retry.status}`);
-      } catch (error) {
-        log(`agreements retry failed: ${error.message || error}`);
+    // The page redirects itself to /home when the account is usable, so that is
+    // the signal — not the status of any request we made.
+    if (url.includes("/home") && !url.includes("/not-approved")) {
+      const session = await exec(tabId, verifySession, [], "MAIN").catch(() => null);
+      if (session && session.status === 200) {
+        log(`ui finalise · session 200 · ${session.name || session.id}`);
+        return { session, ui: step, username: session.name || username || null };
       }
+      if (session) log(`ui finalise · at /home but session ${session.status}`);
     }
-    // Replace the stale /not-approved page and its modal before the runner
-    // closes or keeps the tab.
-    await api.tabs.update(tabId, { url: HOME }).catch(() => {});
-    await waitComplete(tabId, Math.min(timeout, 30_000), shouldStop).catch(() => {});
+
+    if (attempts >= 20) break;
+    attempts += 1;
+
+    step = await withTimeout(
+      exec(
+        tabId,
+        uiFinaliseStep,
+        [birthday, username, options.gender || 1, options.acceptTerms !== false],
+        "MAIN"
+      ),
+      45_000,
+      "ui finalise"
+    ).catch((error) => {
+      log(`ui finalise step failed: ${error.message || error}`);
+      return null;
+    });
+
+    if (step) {
+      if (step.blocked) {
+        log(`ui finalise blocked: ${step.blocked}`);
+        break;
+      }
+      lastText = step.text || lastText;
+      const did = ["agree", "username", "month", "day", "year", "gender", "next"]
+        .filter((key) => step[key])
+        .join(", ");
+      if (did) log(`ui finalise: ${did}`);
+    }
+    await sleep(2200);
   }
 
-  return { ...result, username: result.session?.name || username || null };
+  const session = await exec(tabId, verifySession, [], "MAIN").catch(() => null);
+  log(
+    `ui finalise gave up · session ${session?.status ?? 0}` +
+      (lastText ? ` · page: ${lastText}` : "")
+  );
+  return { session: session || { status: 0 }, ui: step, username: session?.name || username || null };
 }
 
 export async function runIdentity(options) {
@@ -921,7 +862,6 @@ export async function runIdentity(options) {
     acceptTerms = true,
     laneSurface = "tab",
     probeIp = false,
-    retryModerated = true,
   } = options;
 
   const started = Date.now();
@@ -1018,8 +958,6 @@ export async function runIdentity(options) {
           birthday,
           gender,
           acceptTerms,
-          retryModerated,
-          resignIn: () => resignIn(tabId, budget, shouldStop, logFor),
         });
       } catch (error) {
         if (String(error.message || error).includes("stopped")) throw error;
@@ -1039,7 +977,6 @@ export async function runIdentity(options) {
     return {
       cookie,
       session: result.session,
-      upgrade: result.upgrade,
       username: result.username || (ok ? result.session?.name : null),
       finalised: ok,
       elapsed: Math.round((Date.now() - started) / 1000),

@@ -598,53 +598,36 @@ finalised `users.roblox.com/v1/users/authenticated` answers `403 User is
 moderated` for a session that is otherwise valid — the username is right there in
 the site header.
 
-**Finalising is one call.** Captured from a live signup:
+**Finalising is done through the page, not over HTTP.** This is measured, not
+preference: `POST https://auth.roblox.com/v1/account/upgrade` can answer `200`
+while the account stays on `/not-approved`, whereas clicking the page through
+always lands on `/home`. The extension therefore drives the real controls:
 
-```
-POST https://auth.roblox.com/v1/account/upgrade
-{"upgradeType":"OAuth","birthday":"1996-05-15T00:00:00.000Z","gender":3}
+| step | what it does |
+|---|---|
+| I Agree | clicks the button in `#modal-dialog` / `[role="dialog"]` when the *Updated Agreements* modal is up |
+| username | types the chosen name into the editable field, if the form offers one |
+| birthday | opens each `button[role="combobox"][aria-label="Month"\|"Day"\|"Year"]` and clicks the matching item in the portal |
+| Continue | clicks `continue` / `submit` / `done` / `next` |
+| verify | waits for the URL to become `/home`, then requires `users.roblox.com/v1/users/authenticated` to answer `200` |
 
-→ 200 {"userId":11944409701,"username":"ElfinPace3515"}
-```
+The tab is only closed after that check. Until then it is the session the account
+lives in, and the redirect that provisions the account is still running.
 
-`username` is optional. Omit it to keep the username Roblox assigned during SSO
-`signup`; send a validated name to choose one. The current frontend sends it only
-when the prefilled generated name was changed.
+Each pass is idempotent — a field that already shows the wanted value is left
+alone — so the lane can repeat it while the page catches up. Every click is
+logged, and if the page never leaves `/not-approved` the log prints the first 220
+characters of the page's own text, so the next failure says what it wanted.
 
-`X-CSRF-TOKEN` is learned the usual way on this host: send without it, take the
-token from the `x-csrf-token` header on the 403, retry once.
+`X-CSRF-TOKEN`, the agreements POST and the `localStorage` cache flag are no
+longer used anywhere in the finalise path; they are documented in git history if
+the API path is ever worth reviving.
 
-**The "Updated Agreements" modal is a second, separate call.** It is not part of
-`/v1/account/upgrade`. Since the November 2026 terms update, `/not-approved`
-also mounts a modal titled *Updated Agreements* with an **I Agree** button. That
-button calls the user-agreements service:
-
-```
-GET  https://apis.roblox.com/user-agreements/v1/agreements-resolution/web
-POST https://apis.roblox.com/user-agreements/v1/acceptances
-{"acceptances":[{"agreementId":"<id from the GET>"}]}
-```
-
-The POST needs the same CSRF dance: a 403 carries `x-csrf-token`, retry once.
-After a 200 the page caches `Roblox.UserAgreements =
-{"doesUserNeedToAcceptAgreements":false,"lastFetchTimestamp":"…"}` in
-`localStorage`; setting that flag and reloading is what keeps the modal from
-reappearing on a fresh container. The extension does this automatically when
-**Settings → Accept updated Terms of Service** is on.
-
-Before that call, the account answers `403`; after it, `200`:
-
-```
-before: 403 {"message":"User is moderated"}
-after:  200 {"id":11944409701,"name":"ElfinPace3515"}
-```
-
-So pending accounts are **recoverable** — sign in again (`sso-type=login`) and
-finalise, rather than discarding the identity. The finalise button on an account
-row retries both calls.
+So pending accounts are **recoverable** — the finalise button on an account row
+re-runs exactly this sequence on the tab that is held open.
 
 <details>
-<summary>Doing it through the UI (kept as fallback, and why each obvious approach fails)</summary>
+<summary>Why each obvious UI approach fails (measured)</summary>
 
 | what looks right | what is actually true |
 |---|---|

@@ -245,9 +245,6 @@ function renderSettings() {
   const deletePace = $("delete-pace");
   if (deletePace) deletePace.value = String(settings.deletePaceSeconds || 45);
 
-  const retryModerated = $("retry-moderated");
-  if (retryModerated) retryModerated.checked = settings.retryModerated !== false;
-
   const proxyUrl = $("proxy-url");
   if (proxyUrl) proxyUrl.value = settings.proxyUrl || "";
 
@@ -1332,7 +1329,6 @@ async function runBatch(queue, preflight) {
             acceptTerms: settings.acceptTerms !== false,
             laneSurface: settings.laneSurface === "window" ? "window" : "tab",
             probeIp: Boolean(proxyPool.length && storeId),
-            retryModerated: settings.retryModerated !== false,
             onSession: async (cookie) => {
               provisional = {
                 id: uid("acc"),
@@ -2511,12 +2507,6 @@ function wire() {
       draft.settings.laneSurface = value;
     });
     await refresh();
-  });
-
-  $("retry-moderated").addEventListener("change", async (event) => {
-    await mutate((draft) => {
-      draft.settings.retryModerated = Boolean(event.target.checked);
-    });
   });
 
   $("proxy-url").addEventListener("change", async (event) => {

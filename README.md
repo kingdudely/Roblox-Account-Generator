@@ -60,8 +60,9 @@ The runner opens on install. If it does not, click the toolbar icon and choose
 3. **Run** — choose a count, press Start. Each identity gets ten minted backup
    codes; they land on the account row (`codes 10`) and in the export as
    `backup_codes:`. The run accepts the new-account terms interstitial, enrols the
-   authenticator app (secret saved as `otp_secret`), finalises the Roblox account
-   over HTTP, and accepts the updated Roblox terms when the setting is on.
+   authenticator app (secret saved as `otp_secret`), then finalises the Roblox
+   account by driving `www.roblox.com/not-approved` itself: I Agree, username,
+   birthday, Continue — and only closes the tab once the URL is `/home`.
 4. **Settings** — choose whether Roblox keeps its generated username or the run
    sends one from the local generator, set the birthday and gender written at
    finalise (tick **random** under either to roll a fresh value per identity),
