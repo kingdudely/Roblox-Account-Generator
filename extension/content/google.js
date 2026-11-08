@@ -427,6 +427,67 @@
       return;
     }
 
+    // Google Workspace's "Don't get locked out" warning. It appears on a direct
+    // sign-in when the tenant is about to enforce 2SV and is the one screen that
+    // offers enrollment before the deadline. "Do this later" is a trap: it lands
+    // the identity on the account page with no factor, and enforcement locks it
+    // out the next day. Click the enrollment action, never "later".
+    if (
+      /don.?t get locked out|your domain will soon enforce 2-step verification|enroll into 2-step verification now/i.test(
+        body
+      )
+    ) {
+      act("locked-out-warning", () => {
+        const hit =
+          clickExact([
+            "enroll",
+            "enroll now",
+            "get started",
+            "set up 2-step verification",
+            "set up 2-step",
+            "set up",
+            "add 2-step verification",
+            "turn on 2-step verification",
+            "continue",
+          ]) ||
+          clickByText([
+            "enroll into 2-step verification now",
+            "enroll into 2-step verification",
+            "enroll in 2-step verification",
+            "enroll now",
+            "set up 2-step verification",
+            "add 2-step verification",
+            "turn on 2-step verification",
+          ]);
+        if (hit) {
+          once("locked-out-warning", `2SV warning -> ${hit}`);
+          return true;
+        }
+        // Some variants make the enrollment sentence itself the link and leave
+        // only "Do this later" as a button. Follow the settings link, never the
+        // help-centre "Learn more".
+        const link = [...document.querySelectorAll("a[href]")]
+          .filter(visible)
+          .find((anchor) =>
+            /(myaccount|accounts)\.google\.com\/.*(two-step|signinoptions|security)/i.test(
+              anchor.href || ""
+            )
+          );
+        if (link) {
+          try {
+            link.click();
+            once("locked-out-warning", `2SV warning -> ${link.href.slice(0, 90)}`);
+            return true;
+          } catch (_) {
+            // try again on the next tick
+          }
+        }
+        once("locked-out-no-control", "2SV warning: no enrollment control matched");
+        return false;
+      });
+      return;
+    }
+
     // The brand-new-account terms interstitial. It carries no field, so without
     // this click the whole flow sits on it until the lane times out.
     if (
