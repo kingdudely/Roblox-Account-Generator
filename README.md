@@ -70,6 +70,10 @@ The runner opens on install. If it does not, click the toolbar icon and choose
    a `world: "MAIN"` shim supplies the frame clock, so no window appears; switch
    to *own window* only if a page manages to stall it) and **deletion pacing**,
    which walks a small batch of users a minute apart instead of a burst.
+   **2-Step Verification** keeps the safe order (enrol the authenticator, then
+   mint backup codes) and offers the `moderated` re-auth retry; **Egress** takes
+   one SOCKS5 per lane, cycling through a list, with each lane logging the exit
+   IP it actually got.
 
 Accounts are written to extension storage the moment the cookie lands. Export is
 a mirror; closing the tab loses nothing.

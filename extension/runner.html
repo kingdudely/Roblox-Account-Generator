@@ -8,6 +8,10 @@
   </head>
   <body>
     <div class="app">
+      <div id="stale" class="stale">
+        This page is running code from before the last extension reload. Close this tab and open
+        the runner again before trusting anything it says.
+      </div>
       <header class="topbar">
         <div class="brand">
           <span class="mark" aria-hidden="true"></span>
@@ -19,6 +23,7 @@
         <div class="topmeta">
           <button id="grant" class="btn tiny ghost" hidden>Grant site access</button>
           <span id="engine" class="chip">engine</span>
+          <span id="build" class="chip" title="extension version">v&mdash;</span>
           <span id="status" class="chip idle" data-state="idle">idle</span>
         </div>
       </header>
@@ -593,6 +598,62 @@
                 with no window on screen at all. <b>Own window</b> is the old always-visible
                 fallback, for the case where a page manages to freeze its own visibility getters.
                 The log says which one a lane is using and how many frames it has received.
+              </p>
+            </div>
+
+            <div class="card">
+              <div class="card-head">
+                <h2>2-Step Verification</h2>
+                <span class="hint">order of operations</span>
+              </div>
+              <div class="controls">
+                <label class="field check">
+                  <input id="mint-before" type="checkbox" />
+                  <span>Mint backup codes before the first sign-in</span>
+                </label>
+                <label class="field check">
+                  <input id="retry-moderated" type="checkbox" checked />
+                  <span>Re-run SSO when finalise says &ldquo;moderated&rdquo;</span>
+                </label>
+              </div>
+              <p class="note">
+                Google counts a minted backup code as an <b>enrolled 2SV method</b>. Mint one before
+                the first sign-in and Google stops offering authenticator setup &mdash; the account is
+                challenged for a code instead, and ends up with single-use codes as its only second
+                factor. Some tenants then refuse it outright with <i>your sign-in settings don&rsquo;t
+                meet your organization&rsquo;s 2-Step Verification policy</i>. Leave the first box off:
+                the run enrols the authenticator, saves <span class="mono">otp_secret</span>, and mints
+                the codes once the session lands. Accounts already stuck in the codes-only state get a
+                <b>repair 2sv</b> button on their row.
+              </p>
+            </div>
+
+            <div class="card">
+              <div class="card-head">
+                <h2>Egress</h2>
+                <span class="hint">one proxy per lane &middot; Firefox only</span>
+              </div>
+              <div class="controls">
+                <label class="field block">
+                  <span>Proxy for every lane</span>
+                  <input id="proxy-url" type="text" placeholder="socks5://user:pass@host:1080" />
+                </label>
+              </div>
+              <label class="field block">
+                <span>Per-lane proxies, one per line</span>
+                <textarea
+                  id="proxy-list"
+                  rows="3"
+                  placeholder="socks5://user:pass@host1:1080&#10;socks5://user:pass@host2:1080"
+                ></textarea>
+              </label>
+              <p class="note">
+                Lanes cycle through the list, so four lanes with four entries get four exits. SOCKS5
+                credentials are passed to the browser directly &mdash; no prompt, no relay. Each lane
+                logs <span class="mono">lane exit ip</span> from inside its own container, so you can
+                see what the other end actually is. <b>Use a sticky proxy.</b> A rotating one hands a
+                different address to every connection, which makes Google challenge the session
+                mid-flow and Roblox see a signup and an upgrade from two countries.
               </p>
             </div>
 

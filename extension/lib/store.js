@@ -26,6 +26,17 @@ export const DEFAULT_SETTINGS = {
   gender: 1,
   randomGender: false,
   acceptTerms: true,
+  // Google counts a freshly minted backup code as an enrolled 2SV method, so a
+  // pre-minted account is never offered authenticator setup — it is challenged
+  // for a code instead and ends up with single-use codes as its only factor.
+  // Off means: enrol first, mint the codes afterwards as the fallback.
+  mintBeforeSignIn: false,
+  // Re-run SSO once when finalise comes back "User is moderated". The Google
+  // session is still in the container, so it costs one silent round-trip.
+  retryModerated: true,
+  // Egress. Empty means direct. One SOCKS5/HTTP proxy per line; lanes cycle.
+  proxyUrl: "",
+  proxyList: "",
 };
 
 export function emptyState() {

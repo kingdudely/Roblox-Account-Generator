@@ -327,3 +327,17 @@ export async function listCodes(key, email) {
   });
   return (data?.items || []).map((item) => item.verificationCode).filter(Boolean);
 }
+
+// Backup codes are a 2SV *method* as far as Google's policy engine is concerned.
+// A user holding nothing but codes does not satisfy a policy that excludes SMS
+// and voice, and Google answers "your sign-in settings don't meet your
+// organization's 2-Step Verification policy" before it ever offers enrolment.
+// Removing them leaves no method at all, which is what makes Google present the
+// enrolment screen again.
+export async function invalidateCodes(key, email) {
+  await call(key, `/users/${encodeURIComponent(email)}/verificationCodes/invalidate`, {
+    method: "POST",
+    spacing: 200,
+  });
+  return true;
+}

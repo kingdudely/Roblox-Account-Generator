@@ -516,8 +516,35 @@ policy message.
 
 **Backup codes, minted from the API.** Ten are minted per user with
 `POST /users/{user}/verificationCodes/generate`; minting is not gated by
-enforcement. The extension mints before each identity enters a lane; **Mint 2SV
-codes** on the Run tab does it for identities that already exist.
+enforcement.
+
+**Order matters, and getting it wrong is the bug this section used to document.**
+Minting is not a neutral side-channel: Google counts a backup code as an enrolled
+2SV *method*. Mint before the first sign-in and Google never offers the
+authenticator setup, because as far as it is concerned 2SV is already configured.
+The account is challenged for a code instead, burns one, and finishes with
+single-use codes as its only second factor — no `otp_secret`, nothing to answer a
+later challenge with. A tenant whose policy excludes verification codes then
+refuses it outright:
+
+> Your sign-in settings don't meet your organization's 2-Step Verification policy.
+
+So the run now does it the other way round:
+
+1. The first sign-in is left alone. Google offers the authenticator, the lane
+   enrols it, and the secret is saved as `otp_secret`.
+2. **After** the session lands, the ten codes are minted and stored as the
+   fallback for the next sign-in.
+3. Settings → *Mint backup codes before the first sign-in* restores the old
+   order for anyone who needs it. Leave it off.
+
+Accounts already stuck in the codes-only state carry a **codes only** badge in
+the Accounts tab and a **repair 2sv** button. Repair calls
+`POST /users/{user}/verificationCodes/invalidate`, which leaves the user with no
+method at all — the one state where Google must show the enrolment screen again
+— and re-queues the identity. The Roblox account and its cookie are untouched.
+
+**Mint 2SV codes** on the Run tab still mints for identities that already exist.
 
 From the console, the same thing by hand: Admin console → user → **Security** →
 **2-Step Verification** → `GET BACKUP VERIFICATION CODES` → `GENERATE NEW CODES`
@@ -659,9 +686,7 @@ The page still gets a real timestamp (`performance.now()`), and layout still
 works — `getBoundingClientRect()` forces a synchronous layout whether or not
 anything is painted.
 
-Rejected approaches, and why:
-
-| approach | result |
+Rejected approaches, and why:| approach | result |
 |---|---|
 | an `<iframe>` around `accounts.google.com` | impossible twice over: the response carries `x-frame-options: DENY`, and rAF is throttled in hidden iframes too |
 | `tabs.hide()` | still a background tab; cosmetic only |
@@ -673,6 +698,60 @@ The runner logs the truth on every lane, e.g. `google tab is hidden · awake shi
 `no awake shim`, the page froze its own getters or the browser refused
 MAIN-world injection — set **Settings → Lanes → Lane surface** to *Own window*
 and that lane behaves exactly as it did before.
+
+### 8.4 Finalise sequencing, and why /not-approved sticks
+
+The SSO callback sets `.ROBLOSECURITY` **before** the browser has finished the
+redirect chain that provisions the account. Navigating away inside that window
+leaves the account half-created, and `POST /v1/account/upgrade` then answers
+`403 {"message":"User is moderated"}` for a session that is otherwise perfectly
+valid. It looks like a ban and it is not.
+
+The lane therefore waits for a terminal URL (`/not-approved`, `/home`,
+`sso-complete`) before it touches the page, and logs what it waited for:
+
+```
+sso settled on /not-approved
+finalise from /not-approved
+upgrade 200 · session 200 · /not-approved
+upgrade body: {"userId":11944409701,"username":"ElfinPace3515"}
+```
+
+Both lines are logged now — the number alone cannot tell a moderation flag from a
+validation error. If the upgrade still comes back moderated, the run re-runs SSO
+in the same container once (the Google session is still there, so it is a silent
+round-trip) and finalises again. Settings → **Re-run SSO when finalise says
+"moderated"** turns that off.
+
+### 8.5 Egress
+
+Firefox routes per container through `proxy.onRequest`, keyed on
+`details.cookieStoreId`, so each lane can leave from a different address.
+`ProxyInfo` carries `username`/`password` for SOCKS — MDN documents those fields
+as usable with `"socks"` — so an authenticated SOCKS5 needs no local relay and no
+prompt. `proxyDNS: true` is set so names resolve at the proxy; a local lookup
+leaks the real resolver's country and contradicts the exit.
+
+Lanes cycle through the list in Settings → **Egress**, and each lane logs
+`lane exit ip` read from `api.ipify.org` *inside its own container*.
+
+**Use a sticky proxy.** Measured on one rotating provider, five consecutive
+requests through the same endpoint exited from five different countries:
+
+```
+202.4.119.242  Dhaka, BD
+37.212.58.30   Lida, BY
+185.58.173.156
+31.215.15.62
+177.54.84.180
+```
+
+Google sees one session change country mid-auth — that is what produces
+`challenge/iap` and the "sign-in settings" refusal — and Roblox sees the signup
+and the upgrade from two different countries, which is a moderation trigger on
+its own. A rotating proxy is worse than no proxy for this flow. Note also that
+the 51 accounts made on 2026-11-04/05 used **no proxy at all** and all finalised,
+so egress was never the blocker.
 
 ---
 

@@ -14,6 +14,9 @@ export const HOME = "https://www.roblox.com/home";
 export const SSO_INIT =
   "https://auth.roblox.com/v1/external/3161830277039358/sso/oauth/init?postAuthenticationIntentId=web-redirect";
 export const COOKIE = ".ROBLOSECURITY";
+// Answers with the bare exit address as plain text. Read from inside the lane
+// so it reflects that container's proxy, not the browser's.
+export const IP_ECHO = "https://api.ipify.org/";
 
 export const LANE_COLUMNS = ["blue", "turquoise", "green", "purple", "orange", "pink"];
 
@@ -733,10 +736,66 @@ async function pumpCredentials(tab, identity, timeout, shouldStop, storeId, log,
   throw new Error("no .ROBLOSECURITY within the time budget");
 }
 
+// The SSO callback sets .ROBLOSECURITY before the browser has finished the
+// redirect chain that provisions the account. Navigate away in that window and
+// the account is left half-created, which is what makes /v1/account/upgrade
+// answer "User is moderated" forever. So wait for a terminal page first.
+function shortUrl(url) {
+  return String(url || "").split("?")[0].slice(-70);
+}
+
+async function awaitSsoSettled(tabId, timeout, shouldStop, log) {
+  const deadline = Date.now() + Math.min(timeout, 30_000);
+  let last = "";
+  while (Date.now() < deadline) {
+    if (shouldStop && shouldStop()) return;
+    const tab = await getTab(tabId).catch(() => null);
+    if (!tab) return;
+    last = tab.url || "";
+    if (/not-approved|\/home|sso-complete/.test(last)) {
+      log(`sso settled on ${shortUrl(last)}`);
+      return;
+    }
+    await sleep(700);
+  }
+  log(`sso did not settle in time (last: ${shortUrl(last)})`);
+}
+
+// Hitting SSO init inside the same container rides the Google session that is
+// already there, so this is a silent round-trip — no credentials, no form. If
+// Google answers with an interactive page instead, the session is gone and we
+// stop rather than pretend.
+async function resignIn(tabId, timeout, shouldStop, log) {
+  try {
+    await api.tabs.update(tabId, { url: SSO_INIT });
+  } catch (_) {
+    return false;
+  }
+  const deadline = Date.now() + Math.min(timeout, 90_000);
+  while (Date.now() < deadline) {
+    if (shouldStop && shouldStop()) return false;
+    await sleep(1500);
+    const tab = await getTab(tabId).catch(() => null);
+    if (!tab) return false;
+    const url = tab.url || "";
+    if (/accounts\.google\.com/.test(url)) {
+      log("re-auth hit an interactive Google page — the container session is gone");
+      return false;
+    }
+    if (/not-approved|\/home|sso-complete/.test(url)) {
+      log(`re-auth landed on ${shortUrl(url)}`);
+      return true;
+    }
+  }
+  return false;
+}
+
 async function finaliseOnTab(tabId, timeout, shouldStop, log, options = {}) {
+  const landing = (await getTab(tabId).catch(() => null))?.url || "";
   await api.tabs.update(tabId, { url: HOME });
   await waitComplete(tabId, Math.min(timeout, 60_000), shouldStop);
   await sleep(2500);
+  log(`finalise from ${shortUrl(landing)}`);
 
   const acceptTerms = options.acceptTerms !== false;
   let agreement = null;
@@ -762,28 +821,52 @@ async function finaliseOnTab(tabId, timeout, shouldStop, log, options = {}) {
 
   let username = options.username || "";
   const birthday = options.birthday || "1996-05-15";
-  let result = null;
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    result = await withTimeout(
-      exec(tabId, upgradeAndValidate, [birthday, username, options.gender || 1], "MAIN"),
-      60_000,
-      "roblox finalise"
-    );
-    if (!result) throw new Error("finalise returned nothing");
-    log(
-      `upgrade ${result.upgrade.status}` +
-        (result.upgrade.code ? `/${result.upgrade.code}` : "") +
-        ` · session ${result.session.status}`
-    );
-    if (result.session.status !== 200 && result.upgrade.body) {
-      log(`upgrade body: ${String(result.upgrade.body).slice(0, 180)}`);
+
+  const attemptUpgrade = async () => {
+    let out = null;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      out = await withTimeout(
+        exec(tabId, upgradeAndValidate, [birthday, username, options.gender || 1], "MAIN"),
+        60_000,
+        "roblox finalise"
+      );
+      if (!out) throw new Error("finalise returned nothing");
+      log(
+        `upgrade ${out.upgrade.status}` +
+          (out.upgrade.code ? `/${out.upgrade.code}` : "") +
+          ` · session ${out.session.status} · ${shortUrl(out.url)}`
+      );
+      // The body is the only place Roblox says *why*: "User is moderated" vs a
+      // validation error vs a dead session all arrive as a status otherwise.
+      if (out.upgrade.body) log(`upgrade body: ${String(out.upgrade.body).slice(0, 240)}`);
+      if (out.session.status === 200) break;
+      if (!out.usernameTaken || attempt >= 3) break;
+      username = makeUsername(attempt + 1);
+      log(`username ${username} rejected — retrying`);
     }
-    if (result.session.status === 200) break;
-    if (!result.usernameTaken || attempt >= 3) break;
-    username = makeUsername(attempt + 1);
-    log(`username ${username} rejected — retrying`);
-  }
+    return out;
+  };
+
+  let result = await attemptUpgrade();
   if (!result) throw new Error("finalise returned nothing");
+
+  // "User is moderated" on a session that is otherwise valid is the fresh
+  // account not having been provisioned yet. Signing in again completes it, and
+  // the Google session is already in this container, so it costs one round-trip.
+  const moderated = /moderat/i.test(String(result.upgrade.body || ""));
+  if (
+    result.session.status !== 200 &&
+    moderated &&
+    typeof options.resignIn === "function" &&
+    options.retryModerated !== false
+  ) {
+    log("moderated at finalise — re-running SSO in this container");
+    if (await options.resignIn()) {
+      await waitComplete(tabId, Math.min(timeout, 45_000), shouldStop).catch(() => {});
+      await sleep(2000);
+      result = await attemptUpgrade();
+    }
+  }
 
   if (result.session.status === 200) {
     if (acceptTerms) {
@@ -825,6 +908,8 @@ export async function runIdentity(options) {
     gender = 1,
     acceptTerms = true,
     laneSurface = "tab",
+    probeIp = false,
+    retryModerated = true,
   } = options;
 
   const started = Date.now();
@@ -840,8 +925,25 @@ export async function runIdentity(options) {
     const wiped = await clearSiteCookies(storeId);
     if (wiped) logFor(`cleared ${wiped} stale cookies`);
 
-    surface = await openLaneSurface(storeId, SSO_INIT, lane, laneSurface);
+    surface = await openLaneSurface(storeId, probeIp ? IP_ECHO : SSO_INIT, lane, laneSurface);
     tabId = surface.tabId;
+    if (probeIp) {
+      // The exit IP has to be read from inside the lane, because the proxy is
+      // bound to this container. api.ipify.org answers with the bare address as
+      // a top-level navigation, so no CORS or CSP is involved.
+      await sleep(1400);
+      const seen = await exec(
+        tabId,
+        () => String(document.body ? document.body.innerText : "").trim().slice(0, 60),
+        [],
+        "MAIN"
+      ).catch(() => "");
+      logFor(`lane exit ip ${seen || "unknown"}`);
+      if (seen && identity.exit_ip && identity.exit_ip !== seen) {
+        logFor(`exit ip changed ${identity.exit_ip} -> ${seen} — rotating proxies break sign-in`);
+      }
+      await api.tabs.update(tabId, { url: SSO_INIT }).catch(() => {});
+    }
     logFor(
       `${identity.email} · sso init opened` +
         (surface.ownWindow
@@ -889,6 +991,10 @@ export async function runIdentity(options) {
       }
     }
 
+    // The SSO callback has set the cookie, but the account may still be
+    // provisioning. Let the redirect chain finish before touching the page.
+    await awaitSsoSettled(tabId, 25_000, shouldStop, logFor);
+
     const result = await (async () => {
       try {
         return await finaliseOnTab(tabId, budget, shouldStop, logFor, {
@@ -896,6 +1002,8 @@ export async function runIdentity(options) {
           birthday,
           gender,
           acceptTerms,
+          retryModerated,
+          resignIn: () => resignIn(tabId, budget, shouldStop, logFor),
         });
       } catch (error) {
         if (String(error.message || error).includes("stopped")) throw error;

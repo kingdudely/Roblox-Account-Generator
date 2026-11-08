@@ -31,6 +31,12 @@ import {
   fullDomain,
 } from "./lib/duckdns.js";
 import { parseTotp, totpCode, secondsRemaining } from "./lib/totp.js";
+import {
+  lanesFromSettings,
+  proxyForLane,
+  publishLaneProxies,
+  describeProxy,
+} from "./lib/proxy.js";
 
 const ORIGINS = [
   "https://accounts.google.com/*",
@@ -227,6 +233,18 @@ function renderSettings() {
   const deletePace = $("delete-pace");
   if (deletePace) deletePace.value = String(settings.deletePaceSeconds || 45);
 
+  const mintBefore = $("mint-before");
+  if (mintBefore) mintBefore.checked = settings.mintBeforeSignIn === true;
+
+  const retryModerated = $("retry-moderated");
+  if (retryModerated) retryModerated.checked = settings.retryModerated !== false;
+
+  const proxyUrl = $("proxy-url");
+  if (proxyUrl) proxyUrl.value = settings.proxyUrl || "";
+
+  const proxyList = $("proxy-list");
+  if (proxyList) proxyList.value = settings.proxyList || "";
+
   setText("engine", isFirefox ? "Firefox · containers" : "Chrome · 1 lane");
 }
 
@@ -326,6 +344,13 @@ function renderAccounts() {
       tag.textContent = "pending";
       title.append(tag);
     }
+    if (!account.otp_secret && Array.isArray(account.backup_codes) && account.backup_codes.length) {
+      const tag = document.createElement("span");
+      tag.className = "codes-tag";
+      tag.textContent = "codes only";
+      tag.title = "No authenticator secret — 2SV is answered by single-use codes, which some policies reject";
+      title.append(tag);
+    }
     const mail = document.createElement("div");
     mail.className = "mail";
     mail.textContent = account.email || "";
@@ -350,6 +375,9 @@ function renderAccounts() {
     }
     if (account.otp_secret) {
       acts.append(smallAction("otp", () => copyText(account.otp_secret)));
+    }
+    if (codes.length && !account.otp_secret) {
+      acts.append(smallAction("repair 2sv", () => repairTwoStep(account)));
     }
     if (account.status === "pending") {
       acts.append(smallAction("finalise", () => finaliseAccount(account)));
@@ -1129,6 +1157,24 @@ async function runBatch(queue, preflight) {
     containers.push(await ensureContainer(index));
   }
 
+  // Egress. The router lives in the background page, so the lane -> exit map is
+  // published once per batch; container ids are stable for the life of the
+  // browser. No proxy configured means nothing is sent and every lane is direct.
+  const proxyPool = lanesFromSettings(settings);
+  if (proxyPool.length) {
+    const map = {};
+    for (const [index, container] of containers.entries()) {
+      const proxy = proxyForLane(proxyPool, index);
+      if (container.storeId && proxy) map[container.storeId] = proxy;
+    }
+    const taken = await publishLaneProxies(map);
+    await remember(
+      `egress: ${containers.map((_, index) => describeProxy(proxyForLane(proxyPool, index))).join(" / ")}` +
+        (taken ? "" : " — the background did not accept the map, lanes are direct"),
+      taken ? "info" : "warn"
+    );
+  }
+
   let cursor = 0;
   let made = 0;
   let consecutive = 0;
@@ -1188,9 +1234,13 @@ async function runBatch(queue, preflight) {
       );
 
       try {
-        // Backup codes are minted before the tab opens: they are the fallback
-        // if the authenticator enrollment cannot complete on this run.
-        if (!identity.codes?.length) {
+        // Order matters. verificationCodes/generate makes Google treat the
+        // account as 2SV-enrolled, so a pre-minted user is never offered
+        // authenticator setup — it is challenged for a code instead and ends up
+        // with single-use codes as its only factor. A first sign-in therefore
+        // enrols, and the codes are minted once the session lands.
+        const preMint = settings.mintBeforeSignIn === true || Boolean(identity.otp_secret);
+        if (!identity.codes?.length && preMint) {
           try {
             const codes = await mintWithRetry(key, identity.email);
             identity.codes = codes;
@@ -1220,6 +1270,8 @@ async function runBatch(queue, preflight) {
             gender: profile.gender,
             acceptTerms: settings.acceptTerms !== false,
             laneSurface: settings.laneSurface === "window" ? "window" : "tab",
+            probeIp: Boolean(proxyPool.length && storeId),
+            retryModerated: settings.retryModerated !== false,
             onSession: async (cookie) => {
               provisional = {
                 id: uid("acc"),
@@ -1291,6 +1343,34 @@ async function runBatch(queue, preflight) {
           made += 1;
           consecutive = 0;
           await remember(`${account.username} (id ${account.user_id}) — saved`, "ok");
+          // The fallback is minted only now: the account has an authenticator
+          // (or Google refused to enrol one), and codes minted here cannot
+          // suppress the setup screen that has already been passed.
+          if (!identity.codes?.length) {
+            try {
+              const codes = await mintWithRetry(key, identity.email);
+              identity.codes = codes;
+              await mutate((draft) => {
+                const row = draft.identities.find((entry) => entry.id === identity.id);
+                if (row) row.codes = codes;
+                const stored = draft.accounts.find((entry) => entry.identity_id === identity.id);
+                if (stored) stored.backup_codes = codes;
+              });
+              await remember(`${identity.email}: ${codes.length} backup code(s) minted after sign-in`, "info");
+            } catch (error) {
+              await remember(
+                `${identity.email}: codes not minted — ${String(error.message || error).slice(0, 120)}`,
+                "warn"
+              );
+            }
+          }
+          const secret = liveOtp.get(String(identity.email).toLowerCase()) || identity.otp_secret;
+          if (!secret) {
+            await remember(
+              `${identity.email}: no authenticator secret captured — this account can only answer codes`,
+              "warn"
+            );
+          }
         } else {
           consecutive += 1;
           await remember(
@@ -1337,9 +1417,47 @@ async function runBatch(queue, preflight) {
 
 // -------------------------------------------------------------------- finalise
 
+// A user whose only 2SV method is backup codes does not satisfy a policy that
+// excludes SMS and voice, and Google refuses them at the door with "your
+// sign-in settings don't meet your organization's 2-Step Verification policy".
+// Removing the codes leaves no method at all, which is what makes Google show
+// the enrolment screen again — so the identity goes back on the queue and the
+// next sign-in sets up the authenticator.
+async function repairTwoStep(account) {
+  const key = state.keys.find((entry) => entry.id === account.key_id);
+  if (!key) {
+    await remember("no key for this account — cannot reach the directory", "error");
+    return;
+  }
+  const identity = state.identities.find((entry) => entry.id === account.identity_id);
+  const count = Array.isArray(account.backup_codes) ? account.backup_codes.length : 0;
+  const ok = confirm(
+    `Repair 2SV for ${account.email}?\n\n` +
+      `This invalidates ${count || "the"} backup code(s) and re-queues the identity, so the next ` +
+      "sign-in is forced to set up an authenticator app. The Roblox account and its cookie are " +
+      "not touched."
+  );
+  if (!ok) return;
+
+  await remember(`${account.email}: invalidating backup codes`, "step");
+  await admin.invalidateCodes(key, account.email);
+
+  await mutate((draft) => {
+    const row = draft.identities.find((entry) => entry.id === account.identity_id);
+    if (row) {
+      row.codes = [];
+      row.status = "ready";
+      row.error = null;
+    }
+    const stored = draft.accounts.find((entry) => entry.id === account.id);
+    if (stored) stored.backup_codes = [];
+  });
+  await remember(`${account.email}: codes cleared — queued for an authenticator setup`, "ok");
+  await refresh();
+}
+
 async function finaliseAccount(account) {
   await remember(`finalising ${account.email}...`, "step");
-
   let tab = null;
   if (account.tab_id) tab = await api.tabs.get(account.tab_id).catch(() => null);
 
@@ -2204,6 +2322,32 @@ function wire() {
     await refresh();
   });
 
+  $("mint-before").addEventListener("change", async (event) => {
+    await mutate((draft) => {
+      draft.settings.mintBeforeSignIn = Boolean(event.target.checked);
+    });
+  });
+
+  $("retry-moderated").addEventListener("change", async (event) => {
+    await mutate((draft) => {
+      draft.settings.retryModerated = Boolean(event.target.checked);
+    });
+  });
+
+  $("proxy-url").addEventListener("change", async (event) => {
+    await mutate((draft) => {
+      draft.settings.proxyUrl = event.target.value.trim();
+    });
+    await refresh();
+  });
+
+  $("proxy-list").addEventListener("change", async (event) => {
+    await mutate((draft) => {
+      draft.settings.proxyList = event.target.value.trim();
+    });
+    await refresh();
+  });
+
   $("delete-batch").addEventListener("change", async (event) => {
     const value = Math.max(1, Math.min(50, Number(event.target.value) || 5));
     await mutate((draft) => {
@@ -2553,16 +2697,40 @@ function wire() {
 
 // ------------------------------------------------------------------------ boot
 
+// A runner tab survives an extension reload, but its module graph does not get
+// replaced: the page keeps calling the old code while the new background and
+// content scripts are live. That looks exactly like a broken flow, so say it
+// instead of letting the user debug a stale page.
+async function checkBuild() {
+  try {
+    const reply = await api.runtime.sendMessage({ type: "ping" });
+    if (!reply || !reply.ok) throw new Error("no reply");
+    setText("build", `v${reply.version}`);
+    $("stale")?.classList.remove("show");
+    return true;
+  } catch (_) {
+    setText("build", "stale");
+    $("stale")?.classList.add("show");
+    return false;
+  }
+}
+
 async function boot() {
   state = await load();
   wire();
   renderConsoleLog();
   render();
+  await checkBuild();
 
   setInterval(() => {
     setText("console-clock", new Date().toTimeString().slice(0, 8));
     updateTotp();
   }, 1000);
+  setInterval(() => {
+    // Cheap heartbeat: a reload invalidates the old page's runtime, and this is
+    // the only reliable way for a page with no open connection to notice.
+    checkBuild().catch(() => {});
+  }, 15_000);
   setText("console-clock", new Date().toTimeString().slice(0, 8));
 
   const granted = await hasPermissions();
