@@ -121,14 +121,6 @@ async function clearLog() {
 api.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message !== "object") return false;
 
-  if (message.type === "ping") {
-    // The runner uses this to notice that it is an orphaned page: after the
-    // extension is reloaded, the old page keeps running its old module graph
-    // and every sendMessage rejects.
-    sendResponse({ ok: true, version: api.runtime.getManifest().version });
-    return false;
-  }
-
   if (message.type === "proxy-config") {
     const map = message.map || {};
     laneProxies = new Map(Object.entries(map).filter(([, value]) => Boolean(value)));

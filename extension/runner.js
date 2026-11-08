@@ -2865,13 +2865,21 @@ function wire() {
 
 // A runner tab survives an extension reload, but its module graph does not get
 // replaced: the page keeps calling the old code while the new background and
-// content scripts are live. That looks exactly like a broken flow, so say it
-// instead of letting the user debug a stale page.
-async function checkBuild() {
+// content scripts are live. That looks exactly like a broken flow, so say it.
+//
+// The test has to be synchronous. An earlier version asked the background over
+// runtime.sendMessage and treated "no reply" as "stale" — a dropped message and
+// a dead context are not the same thing, and it flagged healthy pages. A page
+// orphaned by a reload loses its runtime object entirely, so getManifest()
+// throwing is the real signal.
+function checkBuild() {
   try {
-    const reply = await api.runtime.sendMessage({ type: "ping" });
-    if (!reply || !reply.ok) throw new Error("no reply");
-    setText("build", `v${reply.version}`);
+    const manifest =
+      api.runtime && typeof api.runtime.getManifest === "function"
+        ? api.runtime.getManifest()
+        : null;
+    if (!manifest || !manifest.version) throw new Error("no runtime");
+    setText("build", `v${manifest.version}`);
     $("stale")?.classList.remove("show");
     return true;
   } catch (_) {
@@ -2898,7 +2906,7 @@ async function boot() {
   setInterval(() => {
     // Cheap heartbeat: a reload invalidates the old page's runtime, and this is
     // the only reliable way for a page with no open connection to notice.
-    checkBuild().catch(() => {});
+    checkBuild();
   }, 15_000);
   setText("console-clock", new Date().toTimeString().slice(0, 8));
 
