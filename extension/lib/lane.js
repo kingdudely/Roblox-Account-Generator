@@ -1004,8 +1004,9 @@ async function primeGoogleSession(tabId, identity, timeout, shouldStop, storeId,
       }
       // A stored secret means there is nothing to enrol — the session is the
       // product. A fresh account gets a setup card, which the content script
-      // needs a few ticks to drive.
-      if (initialSecret || Date.now() - signedInAt > 30_000) {
+      // needs a few ticks to drive. The QR/setup page can take longer than the
+      // first page, so each setup screen restarts this window.
+      if (initialSecret || Date.now() - signedInAt > 60_000) {
         log(
           initialSecret
             ? "prime: session ready"
@@ -1024,6 +1025,11 @@ async function primeGoogleSession(tabId, identity, timeout, shouldStop, storeId,
 
     if (body && body !== lastBody) {
       lastBody = body;
+      // A setup screen can take longer than the landing page. Keep the 60s
+      // window alive while the QR/key wizard is actually on screen.
+      if (signedInAt && /scan the qr|can.t scan|setup key|enter a setup key|add authenticator app/i.test(body)) {
+        signedInAt = Date.now();
+      }
       if (/don.?t meet your organization|2-step verification policy/i.test(body)) {
         log("prime: policy wall on direct sign-in — falling back to the SSO lane");
         return false;

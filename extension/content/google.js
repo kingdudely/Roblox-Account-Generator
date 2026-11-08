@@ -397,12 +397,75 @@
       return;
     }
 
-    // account chooser
-    if (body.includes("use another account")) {
+    // account chooser. The Roblox OAuth client is a different client id from
+    // the Admin SDK key, so Google asks which account to use even though the
+    // identity is already signed in. Pick the identity's row — "Use another
+    // account" sends the lane back to the password/2SV challenge it just solved.
+    if (body.includes("use another account") || body.includes("choose an account")) {
       act("chooser", () => {
-        const hit = clickByText(["use another account"]);
-        once("chooser", "chooser: use another account");
-        return hit;
+        const email = String(state.creds?.email || "").toLowerCase();
+        // The chooser can render before the lane's first handoff. Without an
+        // email to match, "Use another account" would undo the sign-in the
+        // prime just completed; wait one tick instead.
+        if (!email) return false;
+        const labelOf = (el) =>
+          `${el.getAttribute("aria-label") || ""} ${el.innerText || ""}`
+            .replace(/\s+/g, " ")
+            .trim();
+        const nodes = [
+          ...document.querySelectorAll('button,[role="button"],a,li,[role="link"]'),
+        ].filter(visible);
+        const rows = [
+          ...document.querySelectorAll("[data-email],[data-identifier],[data-authuser]"),
+        ].filter(visible);
+        const valueOf = (el) =>
+          String(
+            el.getAttribute("data-email") ||
+              el.getAttribute("data-identifier") ||
+              el.getAttribute("data-authuser") ||
+              ""
+          ).toLowerCase();
+        const exact = rows.find((el) => valueOf(el) === email);
+        const firstRow = rows[0];
+        const target = exact || firstRow;
+        if (target) {
+          try {
+            target.click();
+            once("chooser", `chooser: ${valueOf(target) || "first account"}`);
+            return true;
+          } catch (_) {
+            // fall through to the text match
+          }
+        }
+        const hit =
+          nodes.find((el) => labelOf(el).toLowerCase().includes(email)) ||
+          nodes.find(
+            (el) =>
+              labelOf(el).includes("@") &&
+              !/use another account/i.test(labelOf(el))
+          );
+        if (hit) {
+          try {
+            hit.click();
+            once("chooser", `chooser: ${labelOf(hit).slice(0, 60)}`);
+            return true;
+          } catch (_) {
+            // fall through to "use another account"
+          }
+        }
+        const other = nodes.find((el) =>
+          /use another account/i.test(labelOf(el))
+        );
+        if (other) {
+          try {
+            other.click();
+            once("chooser", "chooser: use another account");
+            return true;
+          } catch (_) {
+            // let the next tick retry
+          }
+        }
+        return false;
       });
       return;
     }
@@ -438,12 +501,35 @@
       /add authenticator app/i.test(body)
     ) {
       act("settings-add-auth", () => {
-        const hit = clickByText(
-          ["add authenticator app"],
-          "button,[role=button],a,div"
-        );
-        if (hit) once("settings-add-auth", `2SV settings -> ${hit}`);
-        return hit;
+        const labelOf = (el) =>
+          `${el.getAttribute("aria-label") || ""} ${el.innerText || ""}`
+            .replace(/\s+/g, " ")
+            .trim();
+        // Do not use a broad `div` selector here: the page's outer container
+        // contains the words "Add authenticator app", and clicking it lands on
+        // the "Back to previous page" link instead of the setup control.
+        const controls = [
+          ...document.querySelectorAll(
+            'button,[role="button"],a,[tabindex="0"]'
+          ),
+        ].filter(visible);
+        const hit =
+          controls.find((el) => /^add authenticator app$/i.test(labelOf(el))) ||
+          controls.find((el) => /add authenticator app/i.test(labelOf(el))) ||
+          [...document.querySelectorAll("div")]
+            .filter(visible)
+            .find((el) => labelOf(el).toLowerCase() === "add authenticator app");
+        if (hit) {
+          try {
+            hit.click();
+            once("settings-add-auth", `2SV settings -> ${labelOf(hit).slice(0, 60)}`);
+            return true;
+          } catch (_) {
+            // try again on the next tick
+          }
+        }
+        once("settings-add-auth-miss", "2SV settings: Add authenticator app not found");
+        return false;
       });
       return;
     }
@@ -576,7 +662,7 @@
       }
       if (
         act("pick-challenge-auth", () =>
-          clickByText(["authenticator app", "use your authenticator"], "button,[role=button],li,div")
+          clickByText(["authenticator app", "use your authenticator"], 'button,[role="button"],[role="radio"],li,[role="link"]')
         )
       ) {
         return;
@@ -632,7 +718,7 @@
       }
 
       act("pick-auth", () => {
-        const hit = clickByText(["authenticator app"], "button,[role=button],[role=radio],li,div");
+        const hit = clickByText(["authenticator app"], 'button,[role="button"],[role="radio"],li,[role="link"]');
         if (hit) once("pick-auth", `enrol method -> ${hit}`);
         return hit;
       });
