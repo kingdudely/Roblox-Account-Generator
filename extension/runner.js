@@ -2345,6 +2345,14 @@ function wireSetup() {
       document.querySelector(`.tab[data-tab="${button.dataset.tab}"]`)?.click();
     });
   });
+
+  // External destinations are buttons now, not links inline in a sentence: the
+  // action sits under the sub-step it belongs to instead of interrupting it.
+  panel.addEventListener("click", (event) => {
+    const out = event.target.closest(".link-out");
+    if (!out || !out.dataset.href) return;
+    window.open(out.dataset.href, "_blank", "noopener,noreferrer");
+  });
 }
 
 // ---------------------------------------------------------------------- events
