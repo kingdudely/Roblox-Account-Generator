@@ -2922,9 +2922,17 @@ function wire() {
         // exactly the secret you cannot afford to drop. It used to be discarded
         // here, which is how a working authenticator got lost.
         if (!matched) {
+          // The admin's own settings page has no identity email to send, so
+          // keep whatever admin address is already stored or typed rather than
+          // blanking it on the way in.
+          const adminEmail =
+            email ||
+            draft.totp?.email ||
+            ($("totp-email")?.value || "").trim().toLowerCase() ||
+            "";
           draft.totp = {
             ...(draft.totp || {}),
-            email,
+            email: adminEmail,
             secret: message.secret,
             label: "captured from a sign-in",
           };

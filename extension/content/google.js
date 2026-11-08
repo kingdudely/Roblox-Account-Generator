@@ -427,6 +427,27 @@
       return;
     }
 
+    // Google Account's own 2SV settings page. "Turn on 2-Step Verification" is
+    // disabled until a real second step exists; backup codes are recovery, not
+    // a step. Open the authenticator setup and let the wizard below scrape the
+    // key and type the live code.
+    if (
+      /to turn on 2-step verification, you must first add a second step|second steps/i.test(
+        body
+      ) &&
+      /add authenticator app/i.test(body)
+    ) {
+      act("settings-add-auth", () => {
+        const hit = clickByText(
+          ["add authenticator app"],
+          "button,[role=button],a,div"
+        );
+        if (hit) once("settings-add-auth", `2SV settings -> ${hit}`);
+        return hit;
+      });
+      return;
+    }
+
     // Google Workspace's "Don't get locked out" warning. It appears on a direct
     // sign-in when the tenant is about to enforce 2SV and is the one screen that
     // offers enrollment before the deadline. "Do this later" is a trap: it lands

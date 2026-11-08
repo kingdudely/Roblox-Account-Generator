@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Roblox Alt Creator",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Cloud Identity keys to identities to Roblox accounts, with phone-gate decoding.",
   "permissions": [
     "cookies",
