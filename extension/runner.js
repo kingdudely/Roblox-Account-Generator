@@ -60,6 +60,10 @@ let consoleCount = 0;
 // identity in 2SV. Kept in memory so the lane can answer a challenge in the same
 // run, before the identity object that was queued has been re-read from storage.
 const liveOtp = new Map();
+// Identities that currently have a lane open, keyed by email. The content script
+// can ask for a backup-code set mid-challenge, and the lane holds the only
+// object whose `codes` the pump reads.
+const activeIdentities = new Map();
 
 // ---------------------------------------------------------------- boot / store
 
@@ -240,9 +244,6 @@ function renderSettings() {
 
   const deletePace = $("delete-pace");
   if (deletePace) deletePace.value = String(settings.deletePaceSeconds || 45);
-
-  const mintBefore = $("mint-before");
-  if (mintBefore) mintBefore.checked = settings.mintBeforeSignIn === true;
 
   const retryModerated = $("retry-moderated");
   if (retryModerated) retryModerated.checked = settings.retryModerated !== false;
@@ -1016,6 +1017,65 @@ function mintHint(error) {
   return "";
 }
 
+// The lane is sitting on a backup-code challenge with nothing to type. Mint a
+// set for the identity it is driving; the pump re-reads `codes` on every
+// handoff, so the next message carries them and the challenge gets answered
+// without a restart. If minting is refused, adopt whatever Google already
+// holds; if there is nothing at all, mark the identity so the lane fails fast
+// instead of waiting out its budget.
+async function mintCodesOnDemand(email) {
+  const id = String(email || "").toLowerCase();
+  const identity = activeIdentities.get(id);
+  if (!identity) {
+    await remember(`${email}: codes requested, but no lane is driving this identity`, "warn");
+    return;
+  }
+  if (identity.codes?.length) return;
+
+  const key =
+    state.keys.find((entry) => entry.id === identity.key_id) ||
+    state.keys.find((entry) => entry.status === "ok");
+  if (!key) {
+    identity.noSecondFactor = "no key available to mint a backup code";
+    await remember(`${email}: ${identity.noSecondFactor}`, "error");
+    return;
+  }
+
+  try {
+    const codes = await mintWithRetry(key, email);
+    identity.codes = codes;
+    await mutate((draft) => {
+      const row = draft.identities.find((entry) => entry.id === identity.id);
+      if (row) row.codes = codes;
+      const account = draft.accounts.find((entry) => entry.identity_id === identity.id);
+      if (account) account.backup_codes = codes;
+    });
+    await remember(`${email}: ${codes.length} backup code(s) minted on demand`, "ok");
+  } catch (error) {
+    // Minting can be refused (quota, 412, a policy that forbids codes). Adopt a
+    // set that already exists before giving up on the identity.
+    let existing = [];
+    try {
+      existing = await admin.listCodes(key, email);
+    } catch (_) {
+      existing = [];
+    }
+    if (existing.length) {
+      identity.codes = existing;
+      await mutate((draft) => {
+        const row = draft.identities.find((entry) => entry.id === identity.id);
+        if (row) row.codes = existing;
+      });
+      await remember(`${email}: using ${existing.length} existing backup code(s)`, "warn");
+      return;
+    }
+    identity.noSecondFactor = `no usable second factor for ${email} — ${String(
+      error.message || error
+    ).slice(0, 120)}`;
+    await remember(identity.noSecondFactor, "error");
+  }
+}
+
 // Explicit button for identities that already exist from an earlier run: mint
 // the code now instead of waiting for the next batch to reach them.
 async function mintReadyCodes() {
@@ -1231,14 +1291,17 @@ async function runBatch(queue, preflight) {
         "info"
       );
 
+      // The lane object the content script's "need codes" request resolves to.
+      identity.noSecondFactor = null;
+      activeIdentities.set(String(identity.email || "").toLowerCase(), identity);
+
       try {
-        // Order matters. verificationCodes/generate makes Google treat the
-        // account as 2SV-enrolled, so a pre-minted user is never offered
-        // authenticator setup — it is challenged for a code instead and ends up
-        // with single-use codes as its only factor. A first sign-in therefore
-        // enrols, and the codes are minted once the session lands.
-        const preMint = settings.mintBeforeSignIn === true || Boolean(identity.otp_secret);
-        if (!identity.codes?.length && preMint) {
+        // An identity with no codes and no authenticator has no second factor at
+        // all, and Google answers that with "your sign-in settings don't meet
+        // your organization's 2-Step Verification policy" instead of enrolling
+        // it. There is no setting for this: a lane must never open an account
+        // that cannot possibly authenticate. Mint before the tab, always.
+        if (!identity.codes?.length && !identity.otp_secret) {
           try {
             const codes = await mintWithRetry(key, identity.email);
             identity.codes = codes;
@@ -1362,13 +1425,6 @@ async function runBatch(queue, preflight) {
               );
             }
           }
-          const secret = liveOtp.get(String(identity.email).toLowerCase()) || identity.otp_secret;
-          if (!secret) {
-            await remember(
-              `${identity.email}: no authenticator secret captured — this account can only answer codes`,
-              "warn"
-            );
-          }
         } else {
           consecutive += 1;
           await remember(
@@ -1392,6 +1448,8 @@ async function runBatch(queue, preflight) {
           await remember(`${identity.email}: ${detail}`, "error");
           if (hint) await remember(hint, "warn");
         }
+      } finally {
+        activeIdentities.delete(String(identity.email || "").toLowerCase());
       }
 
       lastProgress.done += 1;
@@ -2455,12 +2513,6 @@ function wire() {
     await refresh();
   });
 
-  $("mint-before").addEventListener("change", async (event) => {
-    await mutate((draft) => {
-      draft.settings.mintBeforeSignIn = Boolean(event.target.checked);
-    });
-  });
-
   $("retry-moderated").addEventListener("change", async (event) => {
     await mutate((draft) => {
       draft.settings.retryModerated = Boolean(event.target.checked);
@@ -2783,6 +2835,10 @@ function wire() {
   }
 
   api.runtime.onMessage.addListener((message) => {
+    if (message?.type === "google-need-codes" && message.email) {
+      mintCodesOnDemand(message.email).catch(() => {});
+      return false;
+    }
     if (message?.type === "identity-totp" && message.secret) {
       const email = String(message.email || "").toLowerCase();
       liveOtp.set(email, message.secret);

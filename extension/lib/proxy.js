@@ -77,9 +77,6 @@ export function proxyForLane(pool, lane) {
   return pool[lane % pool.length];
 }
 
-export function canProxy() {
-  return Boolean(isFirefox && api.proxy && api.proxy.onRequest);
-}
 
 // The router lives in the background page, so the lane -> exit mapping has to
 // be sent there rather than read from here. Container ids are stable for the

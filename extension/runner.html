@@ -709,27 +709,22 @@
             <div class="card">
               <div class="card-head">
                 <h2>2-Step Verification</h2>
-                <span class="hint">order of operations</span>
+                <span class="hint">how a lane gets a second factor</span>
               </div>
               <div class="controls">
-                <label class="field check">
-                  <input id="mint-before" type="checkbox" />
-                  <span>Mint backup codes before the first sign-in</span>
-                </label>
                 <label class="field check">
                   <input id="retry-moderated" type="checkbox" checked />
                   <span>Re-run SSO when finalise says &ldquo;moderated&rdquo;</span>
                 </label>
               </div>
               <p class="note">
-                Google counts a minted backup code as an <b>enrolled 2SV method</b>. Mint one before
-                the first sign-in and Google stops offering authenticator setup &mdash; the account is
-                challenged for a code instead, and ends up with single-use codes as its only second
-                factor. Some tenants then refuse it outright with <i>your sign-in settings don&rsquo;t
-                meet your organization&rsquo;s 2-Step Verification policy</i>. Leave the first box off:
-                the run enrols the authenticator, saves <span class="mono">otp_secret</span>, and mints
-                the codes once the session lands. Accounts already stuck in the codes-only state get a
-                <b>repair 2sv</b> button on their row.
+                There is no switch here, because there is no safe alternative. An identity with no
+                backup codes and no authenticator has <b>no second factor</b>, and Google answers that
+                with <i>your sign-in settings don&rsquo;t meet your organization&rsquo;s 2-Step
+                Verification policy</i> instead of enrolling it. So every lane mints a set before it
+                opens, and if Google asks for a code the runner does not have, the lane requests one
+                mid-challenge and answers it without restarting. If minting is refused, an existing
+                set is adopted from the Directory API rather than failing.
               </p>
             </div>
 

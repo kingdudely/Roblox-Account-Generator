@@ -70,10 +70,11 @@ The runner opens on install. If it does not, click the toolbar icon and choose
    a `world: "MAIN"` shim supplies the frame clock, so no window appears; switch
    to *own window* only if a page manages to stall it) and **deletion pacing**,
    which walks a small batch of users a minute apart instead of a burst.
-   **2-Step Verification** mints backup codes before the first sign-in, because
-   Google's OAuth flow offers these identities a code challenge rather than the
-   authenticator wizard — with neither, the account has no second factor and is
-   refused outright. It also offers the `moderated` re-auth retry; **Egress** takes
+   **2-Step Verification** has no switch: every lane mints backup codes before it
+   opens, and asks for a set mid-challenge if Google wants one the runner does
+   not hold, because an identity with neither codes nor an authenticator has no
+   second factor and is refused outright. It also offers the `moderated`
+   re-auth retry; **Egress** takes
    one SOCKS5 per lane, cycling through a list, with each lane logging the exit
    IP it actually got.
 

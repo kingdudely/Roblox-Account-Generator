@@ -1815,3 +1815,11 @@ details.card[open] summary {
     padding-left: 16px;
   }
 }
+
+/* Placeholders must not read as values. Without this, an empty proxy field with
+   a "socks5://user:pass@host:1080" hint looks like a configured proxy. */
+input::placeholder,
+textarea::placeholder {
+  color: #6d5a56;
+  opacity: 1;
+}

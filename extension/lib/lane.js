@@ -626,9 +626,15 @@ async function waitForGoogle(tabId, timeout, shouldStop, log) {
 }
 
 async function pumpCredentials(tab, identity, timeout, shouldStop, storeId, log, options = {}) {
-  const { codes = [], otpFor = null, surface = null } = options;
+  const { codesFor = null, abortIf = null, otpFor = null, surface = null } = options;
   const deadline = Date.now() + timeout;
-  const codeList = (Array.isArray(codes) ? codes : []).filter(Boolean);
+
+  // Read per handoff, not once: a backup code can be minted *while* the lane is
+  // sitting on the challenge, and the next message has to carry it.
+  const readCodes = () => {
+    const list = typeof codesFor === "function" ? codesFor() : null;
+    return (Array.isArray(list) ? list : []).filter(Boolean);
+  };
 
   let lastNote = 0;
   let lastProbe = 0;
@@ -657,6 +663,12 @@ async function pumpCredentials(tab, identity, timeout, shouldStop, storeId, log,
         log("Google tab closed — waiting for the cookie to settle");
       }
     } else {
+      // A lane that cannot get a second factor will never succeed. Stop in
+      // seconds with the reason instead of burning the whole time budget.
+      const abort = typeof abortIf === "function" ? abortIf() : null;
+      if (abort) throw new Error(abort);
+
+      const codeList = readCodes();
       try {
         // Every handoff also runs one tick inside the page, so the flow keeps
         // moving even when background-timer throttling would have slowed the
@@ -973,7 +985,11 @@ export async function runIdentity(options) {
     logFor(`google: ${(googleTab.url || "").slice(0, 90)}`);
 
     const cookie = await pumpCredentials(googleTab, identity, budget, shouldStop, storeId, logFor, {
-      codes: identity.codes || [],
+      // Read through a function: a set can be minted mid-lane when Google asks
+      // for a code the runner did not have yet.
+      codesFor: () => identity.codes || [],
+      // Set by the runner when the challenge arrived and no set could be minted.
+      abortIf: () => (identity.noSecondFactor ? identity.noSecondFactor : null),
       otpFor,
       surface,
     });

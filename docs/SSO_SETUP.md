@@ -526,27 +526,32 @@ The Roblox OAuth flow does not offer the authenticator setup wizard to these
 identities; it offers a challenge, and the only challenge they can answer is a
 code.
 
-That decides the order. A freshly created identity with **no codes and no
-authenticator has no second factor at all**, and Google does not respond by
-enrolling it — it refuses at the door:
+That decides the order, and it is not configurable. A freshly created identity
+with **no codes and no authenticator has no second factor at all**, and Google
+does not respond by enrolling it — it refuses at the door:
 
 > Couldn't sign you in. Your sign-in settings don't meet your organization's
 > 2-Step Verification policy. Contact your admin for more info.
 
-That is exactly the state the previous build produced for
-`mateo.cardoso1@testestdeez.duckdns.org`: `isEnrolledIn2Sv=false`,
-`isEnforcedIn2Sv=true`, zero verification codes, `lastLoginTime=1970`. Not a
-ban, not a missing licence — no usable method.
+That is exactly the state an earlier build produced for
+`mateo.cardoso1@testestdeez.duckdns.org` and `iris.vargas2@…`: `isEnrolledIn2Sv`
+false, `isEnforcedIn2Sv` true, **zero verification codes**, `lastLoginTime`
+1970. Not a ban, not a missing licence, not the domain — no usable method.
 
-So codes are minted **before** the lane opens (Settings → *Mint backup codes
-before the first sign-in*, on by default), and a second set is minted after a
-successful session only if the first failed. An identity that still hits the
-policy wall has no usable method left: mint it another set from **Mint 2SV
-codes** on the Run tab, or from the API, and it signs in.
+So:
 
-Enrolment is not worthless — it is what the admin account needs, and it is what
-a tenant with enforcement actually wants — but for these identities the OAuth
-flow never reaches the wizard, so the codes are the second factor in practice.
+- every lane mints a set **before** the tab opens, unconditionally;
+- if Google asks for a code the runner does not hold, the content script sends
+  `google-need-codes`, the runner mints, and the next handoff carries the set —
+  the challenge is answered without restarting the lane;
+- if minting is refused (quota, 412, a policy that forbids codes), the runner
+  adopts whatever set Google already holds via `verificationCodes.list`;
+- if there is genuinely nothing, the lane fails in seconds with that reason
+  instead of sitting on the wall until the timeout.
+
+That last point matters for diagnosis: a lane that reaches the policy page with
+`codes=0, enrolled=false` is not a tenant misconfiguration, it is an account
+that was created without a second factor.
 
 **Mint 2SV codes** on the Run tab still mints for identities that already exist.
 

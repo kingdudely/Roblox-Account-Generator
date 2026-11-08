@@ -26,14 +26,6 @@ export const DEFAULT_SETTINGS = {
   gender: 1,
   randomGender: false,
   acceptTerms: true,
-  // Measured on a live tenant: 32 identities, 0 enrolled in 2SV, 28 of them
-  // signed in — all of them with backup codes. Google's OAuth flow never offers
-  // the authenticator wizard to these identities; it only offers a challenge.
-  // A user with no codes and no authenticator therefore has no method at all,
-  // and Google answers "your sign-in settings don't meet your organization's
-  // 2-Step Verification policy" instead of enrolling them. So codes are minted
-  // before the lane opens. Turning this off reproduces that deadlock.
-  mintBeforeSignIn: true,
   // Re-run SSO once when finalise comes back "User is moderated". The Google
   // session is still in the container, so it costs one silent round-trip.
   retryModerated: true,
@@ -62,10 +54,17 @@ export function emptyState() {
 
 function normalise(state) {
   const base = emptyState();
+  const settings = { ...base.settings, ...(state.settings || {}) };
+  // Defaults only fill *missing* keys, so a value an older build wrote into
+  // storage survives a change of default and quietly wins. Settings that were
+  // removed are deleted here; anything whose default must be corrected on
+  // upgrade gets a one-line migration in this block.
+  delete settings.mintBeforeSignIn; // removed: codes are always ensured at lane start
+
   return {
     ...base,
     ...state,
-    settings: { ...base.settings, ...(state.settings || {}) },
+    settings,
     run: { ...base.run, ...(state.run || {}) },
     phone: { ...base.phone, ...(state.phone || {}) },
     duckdns: { ...base.duckdns, ...(state.duckdns || {}) },

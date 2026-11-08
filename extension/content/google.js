@@ -34,6 +34,7 @@
     codeAt: 0,
     codeTried: -1,
     codeBody: "",
+    codeRequestAt: 0,
     otpSecret: "",
     otpSubmitted: false,
     enrolled: false,
@@ -54,6 +55,25 @@
     } catch (_) {
       // extension context gone
     }
+  }
+
+  // Ask the runner to mint a backup-code set for this identity. Google accepts a
+  // freshly minted code as the enrollment step, so "no codes" is a one-API-call
+  // problem, not a dead end. Throttled: the lane hands off every two seconds and
+  // a mint takes longer than that.
+  function requestCodes(reason) {
+    const email = state.creds?.email || "";
+    if (!email) return false;
+    if (state.codeRequestAt && Date.now() - state.codeRequestAt < 20_000) return false;
+    state.codeRequestAt = Date.now();
+    note(`no backup code on hand (${reason}) — asking the runner to mint a set`);
+    try {
+      const sent = api.runtime.sendMessage({ type: "google-need-codes", email });
+      if (sent && typeof sent.catch === "function") sent.catch(() => {});
+    } catch (_) {
+      // extension context gone
+    }
+    return true;
   }
 
   function once(key, text) {
@@ -611,10 +631,12 @@
       return;
     }
 
-    // A backup-code challenge with nothing to type into it would loop on the
-    // method list, so say so instead of clicking through to a dead end.
+    // A backup-code challenge with nothing to type into it. Ask the runner for a
+    // set instead of waiting out the lane: Google accepts a freshly minted code
+    // as the enrollment step.
     if (challengeOffersCode && !limit) {
-      once("no-codes", "backup-code challenge but this identity has no stored code");
+      once("no-codes", "backup-code challenge with no stored code — requesting a set");
+      requestCodes("challenge");
       return;
     }
 
@@ -662,12 +684,20 @@
       return;
     }
 
-    // Enforcement on, but the policy allows no method this account can satisfy:
-    // nothing can be enrolled, so no code can be entered. Tenant setting.
+    // Enforcement on, but no method this account can satisfy. If the page still
+    // shows a code field, it is the challenge screen wearing a policy banner —
+    // ask for a set and answer it. Only a page with nothing to type into is a
+    // genuine tenant dead end.
     if (/2-step verification policy|don.?t meet your organization/i.test(body)) {
+      const field = codeField();
+      if (field && visible(field)) {
+        once("policy-challenge", "policy banner over a code field — treating it as the challenge");
+        requestCodes("policy-challenge");
+        return;
+      }
       once(
         "policy",
-        "the 2SV policy offers no usable method — set Admin console → Security → Authentication → 2-Step Verification → Methods: Any except verification codes via text, phone call (leave phone and security key in the list only if you can satisfy them)"
+        "the 2SV policy offers no usable method — set Admin console → Security → Authentication → 2-Step Verification → Methods: Any except verification codes via text, phone call"
       );
       return;
     }
@@ -710,6 +740,7 @@
         state.codeAt = 0;
         state.codeTried = -1;
         state.codeBody = "";
+        state.codeRequestAt = 0;
         state.otpSecret = "";
         state.otpSubmitted = false;
         state.enrolled = false;
