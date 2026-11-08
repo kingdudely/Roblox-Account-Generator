@@ -2782,6 +2782,14 @@ function wire() {
   $("duck-clear").addEventListener("click", () => duckClear());
 
   $("totp-save").addEventListener("click", () => saveTotp());
+  // Losing the secret costs the account. Save it as soon as it is entered, not
+  // only when the button is remembered.
+  $("totp-secret").addEventListener("change", () => {
+    if ($("totp-secret").value.trim()) saveTotp().catch(() => {});
+  });
+  $("totp-email").addEventListener("change", () => {
+    if (state.totp?.secret) saveTotp().catch(() => {});
+  });
   $("totp-check").addEventListener("click", () => checkTwoStep());
   $("totp-clear").addEventListener("click", () => clearTotp());
   $("totp-qr").addEventListener("click", () => $("totp-qr-file").click());
@@ -2833,17 +2841,33 @@ function wire() {
       const email = String(message.email || "").toLowerCase();
       liveOtp.set(email, message.secret);
       mutate((draft) => {
+        let matched = false;
         const row = draft.identities.find(
           (entry) => String(entry.email || "").toLowerCase() === email
         );
-        if (row) row.otp_secret = message.secret;
+        if (row) {
+          row.otp_secret = message.secret;
+          matched = true;
+        }
         for (const account of draft.accounts) {
           if (String(account.email || "").toLowerCase() === email) {
             account.otp_secret = message.secret;
+            matched = true;
           }
         }
+        // An enrolment that belongs to no identity is the admin's own account -
+        // exactly the secret you cannot afford to drop. It used to be discarded
+        // here, which is how a working authenticator got lost.
+        if (!matched) {
+          draft.totp = {
+            ...(draft.totp || {}),
+            email,
+            secret: message.secret,
+            label: "captured from a sign-in",
+          };
+        }
       }).catch(() => {});
-      remember(`${email || "identity"}: authenticator enrolled, secret saved`, "ok");
+      remember(`${email || "account"}: authenticator secret saved`, "ok");
     }
     if (message?.type === "log-line" && message.line) {
       // Our own lines were appended when they happened; this is the echo.
