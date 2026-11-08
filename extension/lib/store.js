@@ -50,6 +50,10 @@ export function emptyState() {
     phone: { number: "", body: "", payload: "", source: "" },
     duckdns: { token: "", subdomain: "", value: "", answer: "", checked_at: null },
     totp: { email: "", secret: "", algorithm: "SHA1", digits: 6, period: 30, issuer: "", label: "" },
+    // Setup wizard state. "done" is a manual tick — the extension cannot verify
+    // that you created a tenant or accepted an agreement — and "open" remembers
+    // which step blocks you left expanded.
+    setup: { done: {}, open: {}, hideDone: false },
   };
 }
 
@@ -63,6 +67,12 @@ function normalise(state) {
     phone: { ...base.phone, ...(state.phone || {}) },
     duckdns: { ...base.duckdns, ...(state.duckdns || {}) },
     totp: { ...base.totp, ...(state.totp || {}) },
+    setup: {
+      ...base.setup,
+      ...(state.setup || {}),
+      done: { ...(state.setup?.done || {}) },
+      open: { ...(state.setup?.open || {}) },
+    },
   };
 }
 

@@ -78,6 +78,20 @@ api.runtime.onInstalled.addListener((details) => {
     .catch(() => openRunner());
 });
 
+// A runner tab from a previous session points at a dead moz-extension origin
+// when the add-on was loaded temporarily, so come back through the current one
+// instead of letting the restored tab 404.
+api.runtime.onStartup.addListener(() => {
+  api.storage.local
+    .get(STATE_KEY)
+    .then((bag) => {
+      const settings = bag?.[STATE_KEY]?.settings || {};
+      if (settings.openOnInstall === false) return null;
+      return openRunner();
+    })
+    .catch(() => openRunner());
+});
+
 async function appendLog(message) {
   const bag = await api.storage.local.get(LOG_KEY);
   const log = Array.isArray(bag[LOG_KEY]) ? bag[LOG_KEY] : [];

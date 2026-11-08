@@ -1970,6 +1970,7 @@ async function saveDuck(fields) {
   });
   state = await load();
   renderDuckdns();
+  renderSetup();
 }
 
 function duckInputs() {
@@ -2136,6 +2137,7 @@ async function refreshChecklist() {
   if (!named?.domain) {
     mark("dns", null);
     mark("verified", null);
+    renderSetup();
     return;
   }
 
@@ -2181,6 +2183,168 @@ async function refreshChecklist() {
     mark("dns", false);
     await remember(`DNS check failed: ${error.message || error}`, "warn");
   }
+  renderSetup();
+}
+
+// ---------------------------------------------------------------- setup wizard
+
+// Tickable steps. "limits" is reference material and is never counted.
+const SETUP_TICKABLE = ["dns", "tenant", "twostep", "key", "run"];
+
+function setupState() {
+  const setup = state.setup || {};
+  return {
+    done: setup.done || {},
+    open: setup.open || {},
+    hideDone: Boolean(setup.hideDone),
+  };
+}
+
+async function setSetup(fn) {
+  await mutate((draft) => {
+    const base = draft.setup || {};
+    draft.setup = {
+      ...base,
+      done: { ...(base.done || {}) },
+      open: { ...(base.open || {}) },
+    };
+    fn(draft.setup);
+  });
+  state = await load();
+  renderSetup();
+}
+
+function openStep(id, scroll = false) {
+  const step = document.querySelector(`.step[data-step="${id}"]`);
+  if (!step) return;
+  step.classList.add("open");
+  step.querySelector(".step-head")?.setAttribute("aria-expanded", "true");
+  setSetup((draft) => {
+    draft.open[id] = true;
+  }).catch(() => {});
+  if (scroll) step.scrollIntoView({ block: "start", behavior: "smooth" });
+}
+
+function renderSetup() {
+  const steps = [...document.querySelectorAll(".step[data-step]")];
+  if (!steps.length) return;
+
+  const setup = setupState();
+  const firstOpen = SETUP_TICKABLE.find((id) => !setup.done[id]);
+  let complete = 0;
+
+  for (const step of steps) {
+    const id = step.dataset.step;
+    const tickable = SETUP_TICKABLE.includes(id);
+    const done = tickable && Boolean(setup.done[id]);
+    if (done) complete += 1;
+    step.dataset.done = String(done);
+
+    const tick = step.querySelector("[data-step-done]");
+    if (tick) tick.checked = done;
+
+    // Explicit choice wins; otherwise the first unfinished step is the one that
+    // is open, so a returning user lands where they left off.
+    const open = id in setup.open ? Boolean(setup.open[id]) : id === firstOpen;
+    step.classList.toggle("open", open);
+    step.querySelector(".step-head")?.setAttribute("aria-expanded", String(open));
+
+    const pill = step.querySelector("[data-step-status]");
+    if (pill && tickable) {
+      pill.textContent = done ? "done" : "waiting";
+      pill.dataset.state = done ? "ok" : "";
+    }
+  }
+
+  // The automatic checks are evidence, not the user's own progress: they colour
+  // the step pill and never tick the box for you.
+  for (const row of document.querySelectorAll("#checklist li[data-check]")) {
+    if (row.dataset.ok !== "true") continue;
+    const id = row.dataset.step;
+    if (!id) continue;
+    const step = document.querySelector(`.step[data-step="${id}"]`);
+    const pill = document.querySelector(`[data-step-status="${id}"]`);
+    if (!step || !pill || step.dataset.done === "true") continue;
+    pill.textContent = "verified";
+    pill.dataset.state = "ok";
+  }
+
+  setText("setup-count", `${complete} of ${SETUP_TICKABLE.length} done`);
+  const bar = $("setup-bar");
+  if (bar) bar.style.width = `${Math.round((complete / SETUP_TICKABLE.length) * 100)}%`;
+
+  const hide = $("setup-hide");
+  if (hide) {
+    hide.setAttribute("aria-pressed", String(setup.hideDone));
+    hide.classList.toggle("primary", setup.hideDone);
+  }
+  document.getElementById("panel-setup")?.classList.toggle("hide-done", setup.hideDone);
+
+  const duck = state.duckdns || {};
+  if ($("duck-saved")) {
+    setText(
+      "duck-saved",
+      duck.token && duck.subdomain
+        ? `saved · ${duck.subdomain}.duckdns.org`
+        : "not saved yet — step 2.6 needs these"
+    );
+  }
+}
+
+function wireSetup() {
+  const panel = $("panel-setup");
+  if (!panel) return;
+
+  panel.addEventListener("click", (event) => {
+    // The tick is a real checkbox; let its change event do the work.
+    if (event.target.closest("[data-step-done]")) return;
+    const head = event.target.closest(".step-head");
+    if (!head) return;
+    const step = head.closest(".step");
+    const id = step?.dataset.step;
+    if (!id) return;
+    const open = !step.classList.contains("open");
+    step.classList.toggle("open", open);
+    head.setAttribute("aria-expanded", String(open));
+    setSetup((draft) => {
+      draft.open[id] = open;
+    }).catch(() => {});
+  });
+
+  panel.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    const head = event.target.closest(".step-head");
+    if (!head) return;
+    if (event.target.matches("input, button, a, summary")) return;
+    event.preventDefault();
+    head.click();
+  });
+
+  panel.addEventListener("change", (event) => {
+    const box = event.target.closest("[data-step-done]");
+    if (!box) return;
+    const id = box.dataset.stepDone;
+    setSetup((draft) => {
+      draft.done[id] = box.checked;
+    }).catch(() => {});
+  });
+
+  $("setup-jump")?.addEventListener("click", () => {
+    const setup = setupState();
+    openStep(SETUP_TICKABLE.find((id) => !setup.done[id]) || "run", true);
+  });
+
+  $("setup-hide")?.addEventListener("click", () => {
+    setSetup((draft) => {
+      draft.hideDone = !draft.hideDone;
+    }).catch(() => {});
+  });
+
+  panel.querySelectorAll(".jump-tab").forEach((button) => {
+    button.addEventListener("click", () => {
+      document.querySelector(`.tab[data-tab="${button.dataset.tab}"]`)?.click();
+    });
+  });
 }
 
 // ---------------------------------------------------------------------- events
@@ -2194,6 +2358,8 @@ function wire() {
       });
     });
   });
+
+  wireSetup();
 
   $("start").addEventListener("click", () => start({ preflight: false }));
   $("preflight").addEventListener("click", () => start({ preflight: true }));
@@ -2720,6 +2886,9 @@ async function boot() {
   wire();
   renderConsoleLog();
   render();
+  // Paint the wizard before the checklist's API calls: step blocks and manual
+  // ticks should be right immediately, not after a round-trip to Google.
+  renderSetup();
   await checkBuild();
 
   setInterval(() => {
@@ -2738,9 +2907,14 @@ async function boot() {
 
   await refreshChecklist();
 
-  const hash = location.hash.replace("#", "");
+  // #keys, #setup, and #setup/tenant for a specific step block.
+  const [hash, stepId] = location.hash.replace("#", "").split("/");
   if (hash && document.querySelector(`.tab[data-tab="${hash}"]`)) {
     document.querySelector(`.tab[data-tab="${hash}"]`).click();
+  }
+  if (hash === "setup") {
+    renderSetup();
+    if (stepId) setTimeout(() => openStep(stepId, true), 50);
   }
 
   if (!state.keys.length) {

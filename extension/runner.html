@@ -200,306 +200,370 @@
 
           <!-- SETUP ---------------------------------------------------------------->
           <div class="tabpanel" id="panel-setup">
-            <div class="card">
+            <div class="card setup-banner">
+              <p>DM <b>g_oose</b> or <b>kingdudely</b> on Discord to buy pre-made keys!</p>
+            </div>
+
+            <div class="card setup-progress">
               <div class="card-head">
-                <h2>Checklist</h2>
-                <button id="recheck" class="btn tiny ghost">Re-check</button>
+                <h2>Setup</h2>
+                <span class="hint" id="setup-count">0 of 5 done</span>
+                <div class="buttons">
+                  <button id="setup-jump" class="btn tiny">Next step</button>
+                  <button id="recheck" class="btn tiny ghost">Re-check</button>
+                  <button id="setup-hide" class="btn tiny ghost" aria-pressed="false">Hide done</button>
+                </div>
               </div>
-              <ul class="checklist" id="checklist">
-                <li data-check="perm"><i></i><span>Site access granted</span><em>waiting</em></li>
-                <li data-check="key"><i></i><span>A key is loaded</span><em>waiting</em></li>
-                <li data-check="auth"><i></i><span>The key authenticates</span><em>waiting</em></li>
-                <li data-check="dns"><i></i><span>The domain has a Google TXT record</span><em>waiting</em></li>
-                <li data-check="verified"><i></i><span>Google reports the domain as verified</span><em>waiting</em></li>
-                <li data-check="twofa"><i></i><span>Admin 2SV is enrolled</span><em>waiting</em></li>
-                <li data-check="identity"><i></i><span>An identity exists</span><em>waiting</em></li>
+              <div class="bar"><i id="setup-bar"></i></div>
+              <ul class="checklist chips" id="checklist">
+                <li data-check="perm" data-step="run"><i></i><span>Site access</span><em>waiting</em></li>
+                <li data-check="key" data-step="key"><i></i><span>Key loaded</span><em>waiting</em></li>
+                <li data-check="auth" data-step="key"><i></i><span>Key authenticates</span><em>waiting</em></li>
+                <li data-check="dns" data-step="dns"><i></i><span>TXT record</span><em>waiting</em></li>
+                <li data-check="verified" data-step="tenant"><i></i><span>Domain verified</span><em>waiting</em></li>
+                <li data-check="twofa" data-step="twostep"><i></i><span>Admin 2SV</span><em>waiting</em></li>
+                <li data-check="identity" data-step="run"><i></i><span>Identity</span><em>waiting</em></li>
               </ul>
             </div>
 
-            <div class="card">
-              <div class="card-head">
-                <h2>DuckDNS record</h2>
-                <span class="hint">writes the TXT for you</span>
-              </div>
-              <p class="note">
-                When you add the domain in Google Admin it shows a
-                <span class="mono">google-site-verification=&hellip;</span> value. Paste it here with
-                your DuckDNS token; this writes the record through DuckDNS's API and waits until it
-                resolves. DuckDNS has no DNS editor &mdash; the token is the editor.
-              </p>
-              <div class="controls">
-                <label class="field">
-                  <span>DuckDNS token</span>
-                  <input id="duck-token" type="password" autocomplete="off" placeholder="account token" />
+            <!-- 1 ---------------------------------------------------------------->
+            <section class="step" data-step="dns" id="step-dns">
+              <header class="step-head" role="button" tabindex="0" aria-expanded="false">
+                <label class="step-tick" title="mark this step done">
+                  <input type="checkbox" data-step-done="dns" />
                 </label>
-                <label class="field">
-                  <span>Subdomain</span>
-                  <input id="duck-sub" placeholder="farm" />
-                </label>
-              </div>
-              <label class="field block">
-                <span>TXT value</span>
-                <input id="duck-value" placeholder="google-site-verification=..." />
-              </label>
-              <div class="buttons">
-                <button id="duck-write" class="btn primary">Write record</button>
-                <button id="duck-check" class="btn ghost">Check now</button>
-                <button id="duck-clear" class="btn danger">Clear</button>
-              </div>
-              <p class="note mono" id="duck-status">no record written yet</p>
-            </div>
-
-            <details class="card" open>
-              <summary><h2>1 &middot; Get a DuckDNS subdomain</h2></summary>
-              <ol class="steps">
-                <li>
-                  Sign in at
-                  <a href="https://www.duckdns.org" target="_blank" rel="noopener noreferrer">duckdns.org</a>
-                  and add a subdomain.
-                </li>
-                <li>Copy your account token from the same page. One token covers every subdomain.</li>
-                <li>
-                  There is no DNS box in the DuckDNS UI &mdash; TXT records live behind the API. The
-                  card above is that API, so you never touch a dashboard.
-                </li>
-              </ol>
-            </details>
-
-            <details class="card" open>
-              <summary><h2>2 &middot; Create the Cloud Identity account</h2></summary>
-              <ol class="steps">
-                <li>
-                  Open the Cloud Identity Free signup:
-                  <a href="https://workspace.google.com/gcpidentity/signup?sku=identitybasic" target="_blank" rel="noopener noreferrer">
-                    workspace.google.com/gcpidentity/signup
-                  </a>.
-                </li>
-                <li>
-                  <b>About you</b> &mdash; your name and an address you can still read later. It must
-                  <b>not</b> be on the tenant domain; a personal Gmail is what this field is for. It is
-                  only the recovery address.
-                </li>
-                <li><b>About your business</b> &mdash; any company name, and your country.</li>
-                <li>
-                  <b>Your Cloud Identity domain</b> &mdash; enter
-                  <span class="mono">&lt;sub&gt;.duckdns.org</span>. The subdomain must already exist at
-                  <a href="https://www.duckdns.org" target="_blank" rel="noopener noreferrer">duckdns.org</a>.
-                </li>
-                <li>
-                  <b>Create your admin account</b> &mdash; choose a username and password. This creates
-                  <span class="mono">admin@&lt;sub&gt;.duckdns.org</span>. There is no separate Google
-                  account to make first; this is the tenant's first user.
-                </li>
-                <li>
-                  <b>Verify the domain</b> &mdash; Google shows a
-                  <span class="mono">google-site-verification=&hellip;</span> value. Paste it into the
-                  DuckDNS card above, press <b>Write record</b>, then click <b>Verify</b> back in the
-                  signup tab. If Google says it cannot find the record, wait a minute and retry.
-                </li>
-                <li>
-                  Accept the Cloud Identity Agreement. You land in the Google Cloud console with the
-                  tenant live.
-                </li>
-              </ol>
-              <p class="note">
-                If signup stops at a QR instead of a phone field, use the <b>Phone gate</b> card just
-                below &mdash; it reads the destination number and the exact message to send. The line
-                must be able to send SMS; receive-only numbers fail.
-              </p>
-              <p class="note">
-                Already have a Workspace tenant? Skip the signup and add the free edition from
-                <a href="https://admin.google.com/ac/billing/catalog" target="_blank" rel="noopener noreferrer">
-                  Billing &rarr; Cloud Identity Free
-                </a>, adding the domain at
-                <a href="https://admin.google.com/ac/domains/manage" target="_blank" rel="noopener noreferrer">
-                  Domains
-                </a>.
-              </p>
-              <p class="note">
-                If Google answers <i>&ldquo;Cloud Identity does not currently support this domain
-                name&rdquo;</i>, use a domain you own at a registrar instead &mdash; every later step
-                is identical.
-              </p>
-            </details>
-
-            <div class="card" id="phone-gate">
-              <div class="card-head">
-                <h2>Phone gate</h2>
-                <span class="hint">admin signup only</span>
-              </div>
-              <p class="note">
-                Only the tenant admin's signup meets this. When the form stops at &ldquo;verify your
-                device&rdquo;, the QR carries either an <span class="mono">sms:</span> link or a link
-                to Google's consent page. Either way this opens it in the background and presses
-                <b>Send SMS</b>, then reads the number and the message. You do not have to stay on the
-                page. It can read the message, not send it &mdash; the line still has to text from the
-                number being verified.
-              </p>
-              <div class="buttons">
-                <button id="scan-tab" class="btn primary">Scan Google tab</button>
-                <button id="pick-qr" class="btn ghost">Decode image</button>
-                <input id="qr-file" type="file" accept="image/*" hidden />
-              </div>
-              <div class="drop" id="qr-drop" role="button" tabindex="0">
-                Paste (<span class="mono">Ctrl+V</span>), drop an image, or drop a link here
-              </div>
-              <p class="note mono" id="phone-source">no scan yet</p>
-
-              <div class="gate-row">
-                <div class="card-head">
-                  <h2>Number</h2>
-                  <button class="btn tiny ghost copy" data-copy-target="phone-number">Copy</button>
+                <span class="step-num">1</span>
+                <span class="step-name">
+                  Get a DuckDNS subdomain
+                  <em>one name, one token, no dashboard after this</em>
+                </span>
+                <span class="step-status" data-step-status="dns">waiting</span>
+                <span class="step-caret" aria-hidden="true"></span>
+              </header>
+              <div class="step-body">
+                <ol class="step-actions">
+                  <li>Sign in at <a href="https://www.duckdns.org" target="_blank" rel="noopener noreferrer">duckdns.org</a> and add a subdomain.</li>
+                  <li>Copy the account token &mdash; one token covers every subdomain.</li>
+                  <li>
+                    Save them here. <b>Step 2.6</b> uses them to write the verification record.
+                    <details class="why"><summary>There is no DNS editor</summary>
+                      TXT records exist only behind DuckDNS's API. The fields below are that API, so
+                      you never touch a dashboard.
+                    </details>
+                  </li>
+                </ol>
+                <div class="helper">
+                  <div class="helper-head">
+                    <h3>DuckDNS credentials</h3>
+                    <span class="hint">stored in this browser</span>
+                  </div>
+                  <div class="controls">
+                    <label class="field">
+                      <span>Token</span>
+                      <input id="duck-token" type="password" autocomplete="off" placeholder="account token" />
+                    </label>
+                    <label class="field">
+                      <span>Subdomain</span>
+                      <input id="duck-sub" placeholder="farm" />
+                    </label>
+                  </div>
+                  <p class="note mono" id="duck-saved">not saved yet</p>
                 </div>
-                <div id="phone-number" class="bigvalue mono">&mdash;</div>
               </div>
+            </section>
 
-              <div class="gate-row">
-                <div class="card-head">
-                  <h2>Message</h2>
-                  <button class="btn tiny ghost copy" data-copy-target="phone-body">Copy</button>
-                </div>
-                <div id="phone-body" class="bigvalue mono">&mdash;</div>
-                <div id="phone-payload" class="payload mono"></div>
-              </div>
-            </div>
-
-            <details class="card" open>
-              <summary><h2>3 &middot; Authenticator setup</h2></summary>
-              <p class="note">
-                The admin needs an enrolled second factor so the tenant is not half-configured. The
-                authenticator below is local: it turns the setup secret into the current 6-digit
-                code, so no phone or app is needed. Per-identity backup codes are minted through
-                the Admin API. Enforcement has to be <b>On</b> with SMS and phone call removed from
-                the allowed methods &mdash; that is the setting that stops Google offering a phone
-                number at every fresh account's first sign-in.
-              </p>
-              <ol class="steps">
-                <li>
-                  Sign in as the tenant admin and open
-                  <a href="https://myaccount.google.com/signinoptions/two-step-verification" target="_blank" rel="noopener noreferrer">
-                    myaccount.google.com &rarr; Security &rarr; 2-Step Verification
-                  </a>.
-                </li>
-                <li>
-                  Choose <b>Authenticator app</b> (not SMS), then click <b>Can't scan it?</b> and
-                  copy the secret key. Paste it below and use the live code to finish Google's
-                  setup.
-                </li>
-                <li>
-                  Open
-                  <a href="https://admin.google.com/ac/security/2sv" target="_blank" rel="noopener noreferrer">
-                    Admin console &rarr; Security &rarr; Authentication &rarr; 2-Step Verification
-                  </a>
-                  for the OU that holds the identities and set <b>Enforcement</b> to <b>On</b>, with
-                  <b>Methods</b> set to <i>Any except verification codes via text, phone call</i>.
-                  With enforcement off, a fresh account has no second factor, so Google falls back
-                  to <i>&ldquo;Enter a phone number to get a text message&rdquo;</i>. With SMS
-                  disallowed, it offers the authenticator instead and the run enrols it.
-                </li>
-                <li>
-                  The run mints ten one-time codes per identity with
-                  <span class="mono">verificationCodes.generate</span> before opening the Roblox
-                  tab and keeps them on the identity and the account export. At the sign-in the
-                  Google content script accepts the new-account terms, enrols the authenticator
-                  app (secret saved as <span class="mono">otp_secret</span>), and falls back to
-                  <b>Try another way &rarr; Enter one of your backup codes</b>. <b>Mint 2SV
-                  codes</b> on the Run tab does the same for identities that already exist.
-                </li>
-              </ol>
-              <div class="controls">
-                <label class="field">
-                  <span>Admin email</span>
-                  <input id="totp-email" placeholder="admin@example.duckdns.org" />
+            <!-- 2 ---------------------------------------------------------------->
+            <section class="step" data-step="tenant" id="step-tenant">
+              <header class="step-head" role="button" tabindex="0" aria-expanded="false">
+                <label class="step-tick" title="mark this step done">
+                  <input type="checkbox" data-step-done="tenant" />
                 </label>
-                <label class="field">
-                  <span>Authenticator secret</span>
-                  <input
-                    id="totp-secret"
-                    type="password"
-                    autocomplete="off"
-                    placeholder="JBSWY3DPEHPK3PXP or otpauth://..."
-                  />
+                <span class="step-num">2</span>
+                <span class="step-name">
+                  Create the Cloud Identity tenant
+                  <em>signup, verify the domain, land in the console</em>
+                </span>
+                <span class="step-status" data-step-status="tenant">waiting</span>
+                <span class="step-caret" aria-hidden="true"></span>
+              </header>
+              <div class="step-body">
+                <ol class="step-actions">
+                  <li>
+                    <b>2.1</b> Open the Cloud Identity Free signup:
+                    <a href="https://workspace.google.com/gcpidentity/signup?sku=identitybasic" target="_blank" rel="noopener noreferrer">workspace.google.com/gcpidentity/signup</a>.
+                  </li>
+                  <li>
+                    <b>2.2</b> <b>About you</b> &mdash; your name and a mailbox you still read.
+                    <details class="why"><summary>Why not the tenant domain</summary>
+                      This is the recovery address, so it must exist outside the tenant. A personal
+                      Gmail is what the form expects.
+                    </details>
+                  </li>
+                  <li><b>2.3</b> <b>About your business</b> &mdash; any company name, and your country.</li>
+                  <li>
+                    <b>2.4</b> <b>Domain</b> &mdash; <span class="mono">&lt;sub&gt;.duckdns.org</span>,
+                    using the subdomain from step 1.
+                  </li>
+                  <li>
+                    <b>2.5</b> <b>Create the admin account</b> &mdash; username and password. This is
+                    <span class="mono">admin@&lt;sub&gt;.duckdns.org</span>, the tenant's first user.
+                    <details class="why"><summary>If the form stops at a QR</summary>
+                      Google is verifying the device. Use the phone gate below: it reads the number and
+                      the exact message, and presses <b>Send SMS</b> in the background. The line still
+                      has to be able to send SMS.
+                    </details>
+                    <div class="helper" id="phone-gate">
+                      <div class="helper-head">
+                        <h3>Phone gate</h3>
+                        <span class="hint">admin signup only</span>
+                      </div>
+                      <div class="buttons">
+                        <button id="scan-tab" class="btn primary">Scan Google tab</button>
+                        <button id="pick-qr" class="btn ghost">Decode image</button>
+                        <input id="qr-file" type="file" accept="image/*" hidden />
+                      </div>
+                      <div class="drop" id="qr-drop" role="button" tabindex="0">
+                        Paste (<span class="mono">Ctrl+V</span>), drop an image, or drop a link here
+                      </div>
+                      <p class="note mono" id="phone-source">no scan yet</p>
+                      <div class="gate-row">
+                        <div class="card-head">
+                          <h2>Number</h2>
+                          <button class="btn tiny ghost copy" data-copy-target="phone-number">Copy</button>
+                        </div>
+                        <div id="phone-number" class="bigvalue mono">&mdash;</div>
+                      </div>
+                      <div class="gate-row">
+                        <div class="card-head">
+                          <h2>Message</h2>
+                          <button class="btn tiny ghost copy" data-copy-target="phone-body">Copy</button>
+                        </div>
+                        <div id="phone-body" class="bigvalue mono">&mdash;</div>
+                        <div id="phone-payload" class="payload mono"></div>
+                      </div>
+                    </div>
+                  </li>
+                  <li>
+                    <b>2.6</b> <b>Verify the domain</b> &mdash; Google shows a
+                    <span class="mono">google-site-verification=&hellip;</span> value. Paste it below,
+                    press <b>Write record</b>, then <b>Verify</b> in the signup tab.
+                    <div class="helper">
+                      <div class="helper-head">
+                        <h3>DNS TXT record</h3>
+                        <span class="hint">written through the DuckDNS API</span>
+                      </div>
+                      <label class="field block">
+                        <span>TXT value</span>
+                        <input id="duck-value" placeholder="google-site-verification=..." />
+                      </label>
+                      <div class="buttons">
+                        <button id="duck-write" class="btn primary">Write record</button>
+                        <button id="duck-check" class="btn ghost">Check now</button>
+                        <button id="duck-clear" class="btn danger">Clear</button>
+                      </div>
+                      <p class="note mono" id="duck-status">no record written yet</p>
+                      <p class="note">
+                        If Google says it cannot find the record, wait a minute and retry — DuckDNS
+                        answers <span class="mono">KO</span> for both an unknown domain and a bad
+                        token.
+                      </p>
+                    </div>
+                  </li>
+                  <li><b>2.7</b> Accept the Cloud Identity Agreement. You land in the Google Cloud console with the tenant live.</li>
+                </ol>
+                <p class="note">
+                  Already have a Workspace tenant? Add Cloud Identity Free from
+                  <a href="https://admin.google.com/ac/billing/catalog" target="_blank" rel="noopener noreferrer">Billing</a>
+                  and the domain at
+                  <a href="https://admin.google.com/ac/domains/manage" target="_blank" rel="noopener noreferrer">Domains</a>,
+                  then jump to step 3.
+                </p>
+              </div>
+            </section>
+
+            <!-- 3 ---------------------------------------------------------------->
+            <section class="step" data-step="twostep" id="step-twostep">
+              <header class="step-head" role="button" tabindex="0" aria-expanded="false">
+                <label class="step-tick" title="mark this step done">
+                  <input type="checkbox" data-step-done="twostep" />
                 </label>
-              </div>
-              <div class="buttons">
-                <button id="totp-save" class="btn primary">Save secret</button>
-                <button id="totp-qr" class="btn ghost">Decode QR image</button>
-                <button id="totp-check" class="btn ghost">Check admin 2SV</button>
-                <button id="totp-clear" class="btn danger">Clear</button>
-                <input id="totp-qr-file" type="file" accept="image/*" hidden />
-              </div>
-              <div class="drop" id="totp-drop" role="button" tabindex="0">
-                Drop the authenticator QR image here, or paste the secret above
-              </div>
-              <div class="totp-live">
-                <div class="card-head">
-                  <h2>Live code</h2>
-                  <button class="btn tiny ghost copy" data-copy-target="totp-code">Copy</button>
+                <span class="step-num">3</span>
+                <span class="step-name">
+                  Enrol the admin's second factor
+                  <em>authenticator app, then the tenant policy</em>
+                </span>
+                <span class="step-status" data-step-status="twostep">waiting</span>
+                <span class="step-caret" aria-hidden="true"></span>
+              </header>
+              <div class="step-body">
+                <ol class="step-actions">
+                  <li>
+                    <b>3.1</b> Sign in as the admin and open
+                    <a href="https://myaccount.google.com/signinoptions/two-step-verification" target="_blank" rel="noopener noreferrer">myaccount.google.com &rarr; Security &rarr; 2-Step Verification</a>.
+                  </li>
+                  <li>
+                    <b>3.2</b> Choose <b>Authenticator app</b>, click <b>Can't scan it?</b>, and paste
+                    the secret below. The live code finishes Google's setup.
+                  </li>
+                  <li>
+                    <b>3.3</b> In
+                    <a href="https://admin.google.com/ac/security/2sv" target="_blank" rel="noopener noreferrer">Admin console &rarr; Security &rarr; Authentication &rarr; 2-Step Verification</a>,
+                    set <b>Enforcement On</b> and <b>Methods</b> to
+                    <i>Any except verification codes via text, phone call</i>.
+                    <details class="why"><summary>Why exactly this combination</summary>
+                      Enforcement off leaves a fresh account with no second factor, so Google asks for
+                      a phone number. Enforcement on with SMS disallowed makes it offer the
+                      authenticator, which the run can enrol with no phone at all. Anything stricter
+                      produces the deadlock: <i>&ldquo;your sign-in settings don't meet your
+                      organization's 2-Step Verification policy&rdquo;</i>.
+                    </details>
+                  </li>
+                </ol>
+                <div class="helper">
+                  <div class="helper-head">
+                    <h3>Admin authenticator</h3>
+                    <span class="hint">local TOTP, no phone</span>
+                  </div>
+                  <div class="controls">
+                    <label class="field">
+                      <span>Admin email</span>
+                      <input id="totp-email" placeholder="admin@example.duckdns.org" />
+                    </label>
+                    <label class="field">
+                      <span>Authenticator secret</span>
+                      <input id="totp-secret" type="password" autocomplete="off" placeholder="JBSWY3DPEHPK3PXP or otpauth://..." />
+                    </label>
+                  </div>
+                  <div class="buttons">
+                    <button id="totp-save" class="btn primary">Save secret</button>
+                    <button id="totp-qr" class="btn ghost">Decode QR image</button>
+                    <button id="totp-check" class="btn ghost">Check admin 2SV</button>
+                    <button id="totp-clear" class="btn danger">Clear</button>
+                    <input id="totp-qr-file" type="file" accept="image/*" hidden />
+                  </div>
+                  <div class="drop" id="totp-drop" role="button" tabindex="0">
+                    Drop the authenticator QR image here, or paste the secret above
+                  </div>
+                  <div class="totp-live">
+                    <div class="card-head">
+                      <h2>Live code</h2>
+                      <button class="btn tiny ghost copy" data-copy-target="totp-code">Copy</button>
+                    </div>
+                    <div id="totp-code" class="bigvalue mono">------</div>
+                    <div id="totp-countdown" class="hint">&mdash;</div>
+                  </div>
+                  <p class="note mono" id="totp-status">no secret saved</p>
+                  <p class="note mono" id="twofa-status">2SV not checked</p>
+                  <p class="note">
+                    The secret is stored in this browser's extension storage, and is as sensitive as
+                    the admin password. <b>Check admin 2SV</b> reads the real enrolment state from the
+                    Directory API.
+                  </p>
                 </div>
-                <div id="totp-code" class="bigvalue mono">------</div>
-                <div id="totp-countdown" class="hint">&mdash;</div>
               </div>
-              <p class="note mono" id="totp-status">no secret saved</p>
-              <p class="note mono" id="twofa-status">2SV not checked</p>
-              <p class="note">
-                The secret is stored in this browser's extension storage. It is as sensitive as the
-                admin password.
-              </p>
-            </details>
+            </section>
 
-            <details class="card">
-              <summary><h2>4 &middot; Create the key</h2></summary>
-              <ol class="steps">
-                <li>
-                  Create a project inside the tenant's organization at
-                  <a href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noopener noreferrer">
-                    console.cloud.google.com/projectcreate
-                  </a>.
-                </li>
-                <li>
-                  Enable the Admin SDK:
-                  <a href="https://console.cloud.google.com/apis/library/admin.googleapis.com" target="_blank" rel="noopener noreferrer">
-                    admin.googleapis.com
-                  </a>.
-                </li>
-                <li>
-                  OAuth consent screen &rarr; <b>Internal</b>; add scopes
-                  <span class="mono">admin.directory.user</span>,
-                  <span class="mono">admin.directory.user.security</span> and
-                  <span class="mono">admin.directory.domain.readonly</span>.
-                  <a href="https://console.cloud.google.com/apis/credentials/consent" target="_blank" rel="noopener noreferrer">
-                    Open the consent screen
-                  </a>.
-                </li>
-                <li>
-                  Credentials &rarr; <b>Create credentials</b> &rarr; <b>OAuth client ID</b> &rarr;
-                  <b>Desktop app</b> &rarr; download the JSON.
-                  <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer">
-                    Open credentials
-                  </a>.
-                </li>
-                <li>
-                  Paste that JSON into <b>Keys &rarr; Create a key here</b> and authorize. The domain is
-                  detected afterwards, so you can leave that field blank.
-                </li>
-              </ol>
-              <p class="note">
-                Rather not build a tenant? <b>g_oose</b> and <b>kingdudely</b> on Discord sell ready keys.
-                Ask for <span class="mono">client_id</span>, <span class="mono">client_secret</span> and
-                <span class="mono">refresh_token</span> &mdash; no domain needed.
-              </p>
-            </details>
+            <!-- 4 ---------------------------------------------------------------->
+            <section class="step" data-step="key" id="step-key">
+              <header class="step-head" role="button" tabindex="0" aria-expanded="false">
+                <label class="step-tick" title="mark this step done">
+                  <input type="checkbox" data-step-done="key" />
+                </label>
+                <span class="step-num">4</span>
+                <span class="step-name">
+                  Create the key
+                  <em>one desktop OAuth client, three scopes</em>
+                </span>
+                <span class="step-status" data-step-status="key">waiting</span>
+                <span class="step-caret" aria-hidden="true"></span>
+              </header>
+              <div class="step-body">
+                <ol class="step-actions">
+                  <li>
+                    <b>4.1</b> Create a project inside the organization:
+                    <a href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noopener noreferrer">console.cloud.google.com/projectcreate</a>.
+                  </li>
+                  <li>
+                    <b>4.2</b> Enable the Admin SDK:
+                    <a href="https://console.cloud.google.com/apis/library/admin.googleapis.com" target="_blank" rel="noopener noreferrer">admin.googleapis.com</a>.
+                  </li>
+                  <li>
+                    <b>4.3</b> OAuth consent screen &rarr; <b>Internal</b>, with scopes
+                    <span class="mono">admin.directory.user</span>,
+                    <span class="mono">admin.directory.user.security</span> and
+                    <span class="mono">admin.directory.domain.readonly</span>.
+                  </li>
+                  <li>
+                    <b>4.4</b> Credentials &rarr; <b>Create credentials</b> &rarr;
+                    <b>OAuth client ID</b> &rarr; <b>Desktop app</b> &rarr; download the JSON.
+                  </li>
+                  <li>
+                    <b>4.5</b> Paste that JSON into <b>Keys &rarr; Create a key here</b> and authorize.
+                    The domain is detected afterwards, so leave the domain field blank.
+                  </li>
+                </ol>
+                <div class="buttons">
+                  <button class="btn ghost jump-tab" data-tab="keys">Go to Keys</button>
+                </div>
+                <p class="note">
+                  Rather not build a tenant? <b>g_oose</b> and <b>kingdudely</b> on Discord sell ready
+                  keys &mdash; ask for <span class="mono">client_id</span>,
+                  <span class="mono">client_secret</span> and
+                  <span class="mono">refresh_token</span>.
+                </p>
+              </div>
+            </section>
 
-            <details class="card">
-              <summary><h2>5 &middot; Know the limits</h2></summary>
-              <ul class="steps">
-                <li>50 identities per key, roughly 45 before Google's abuse filter answers <span class="mono">412</span>. That flag is permanent per tenant &mdash; deleting users does not clear it.</li>
-                <li>Creation is capped at 10 users per domain per second. The extension paces itself at ~8/s.</li>
-                <li>One Google identity becomes exactly one Roblox account. There is no unlink.</li>
-                <li>Deleting an identity frees the seat; the address stays reserved for about 20 days.</li>
-                <li>Lanes need Firefox containers. Chrome has one cookie jar per profile, so it runs one lane.</li>
-              </ul>
-            </details>
+            <!-- 5 ---------------------------------------------------------------->
+            <section class="step" data-step="run" id="step-run">
+              <header class="step-head" role="button" tabindex="0" aria-expanded="false">
+                <label class="step-tick" title="mark this step done">
+                  <input type="checkbox" data-step-done="run" />
+                </label>
+                <span class="step-num">5</span>
+                <span class="step-name">
+                  Load the key and make the first account
+                  <em>one identity is enough to prove the whole chain</em>
+                </span>
+                <span class="step-status" data-step-status="run">waiting</span>
+                <span class="step-caret" aria-hidden="true"></span>
+              </header>
+              <div class="step-body">
+                <ol class="step-actions">
+                  <li>Add the key on <b>Keys</b>, then press <b>Authorize</b> if it is still a client JSON.</li>
+                  <li>Press <b>Check</b>. A green dot means the Directory API answers.</li>
+                  <li>On <b>Run</b>, set the count to 1 and press <b>Start</b>. Watch the console; the lane reports visibility and exit IP.</li>
+                  <li>Export from <b>Accounts</b>. The cookie is the account — it is saved before finalise too.</li>
+                </ol>
+                <div class="buttons">
+                  <button class="btn primary jump-tab" data-tab="run">Go to Run</button>
+                  <button class="btn ghost jump-tab" data-tab="accounts">Go to Accounts</button>
+                </div>
+              </div>
+            </section>
+
+            <!-- 6 ---------------------------------------------------------------->
+            <section class="step step-muted" data-step="limits" id="step-limits">
+              <header class="step-head" role="button" tabindex="0" aria-expanded="false">
+                <span class="step-tick" aria-hidden="true"></span>
+                <span class="step-num">6</span>
+                <span class="step-name">
+                  Know the limits
+                  <em>what the ceiling actually is</em>
+                </span>
+                <span class="step-status" data-step-status="limits">reference</span>
+                <span class="step-caret" aria-hidden="true"></span>
+              </header>
+              <div class="step-body">
+                <ul class="step-actions">
+                  <li>50 identities per key, roughly 45 before Google answers <span class="mono">412</span>. That flag is permanent per tenant; deleting users does not clear it.</li>
+                  <li>Creation is capped at 10 users per domain per second. The extension paces itself at ~8/s.</li>
+                  <li>One Google identity becomes exactly one Roblox account. There is no unlink.</li>
+                  <li>Deleting an identity frees the seat; the address stays reserved for about 20 days.</li>
+                  <li>Lanes need Firefox containers. Chrome has one cookie jar per profile, so it runs one lane.</li>
+                </ul>
+              </div>
+            </section>
           </div>
 
           <!-- SETTINGS -------------------------------------------------------------->
