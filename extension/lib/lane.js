@@ -352,6 +352,9 @@ async function uiFinaliseStep(birthday, username, gender, acceptTerms) {
     "July", "August", "September", "October", "November", "December",
   ];
   const GENDERS = { 1: "Unspecified", 2: "Male", 3: "Female" };
+  const MONTH = MONTHS[Math.max(0, month - 1)];
+  const DAY = String(day);
+  const YEAR = String(year);
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const shown = (el) => {
@@ -360,7 +363,9 @@ async function uiFinaliseStep(birthday, username, gender, acceptTerms) {
     return rect.width > 1 && rect.height > 1;
   };
   const nameOf = (el) =>
-    String(el.getAttribute("aria-label") || el.innerText || "").replace(/\s+/g, " ").trim();
+    String(el.getAttribute("aria-label") || el.innerText || el.value || "")
+      .replace(/\s+/g, " ")
+      .trim();
   const click = (el) => {
     if (!el) return false;
     try {
@@ -383,6 +388,9 @@ async function uiFinaliseStep(birthday, username, gender, acceptTerms) {
     year: false,
     gender: false,
     next: false,
+    nextDisabled: false,
+    controls: "",
+    buttons: "",
     text: "",
   };
 
@@ -403,6 +411,8 @@ async function uiFinaliseStep(birthday, username, gender, acceptTerms) {
   // 2. Username. The page pre-fills the name Roblox generated; it is editable,
   // which is what keeps "Our generator" working without the upgrade endpoint.
   const wanted = String(username || "").trim();
+  let usernameField = null;
+  let originalUsername = null;
   if (wanted) {
     const inputs = Array.from(document.querySelectorAll("input"))
       .filter(shown)
@@ -416,6 +426,8 @@ async function uiFinaliseStep(birthday, username, gender, acceptTerms) {
     const field = named || (inputs.length === 1 ? inputs[0] : null);
     if (field && field.value !== wanted) {
       try {
+        usernameField = field;
+        originalUsername = field.value;
         const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
         setter.call(field, wanted);
         field.dispatchEvent(new Event("input", { bubbles: true }));
@@ -429,19 +441,52 @@ async function uiFinaliseStep(birthday, username, gender, acceptTerms) {
     }
   }
 
-  // 3. Birthday. The <select> elements on this page are hidden fallbacks; the
-  // real controls are Radix comboboxes whose options mount in a portal.
+  // 3. Birthday. Prefer a real <select> when one is visible — a controlled
+  // React select needs the prototype setter, not `el.value = …`. Otherwise use
+  // the Radix combobox and click the item in its portal.
+  const KIND_LABEL = { month: "Month", day: "Day", year: "Year" };
+  const triggerFor = (kind) =>
+    Array.from(
+      document.querySelectorAll(
+        '[role="combobox"],[aria-haspopup="listbox"],button,select'
+      )
+    )
+      .filter(shown)
+      .find((el) => {
+        const label = String(
+          el.getAttribute("aria-label") || el.getAttribute("name") || ""
+        ).toLowerCase();
+        return label === kind;
+      });
+
+  function setSelect(select, value) {
+    try {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set;
+      setter.call(select, value);
+      select.dispatchEvent(new Event("input", { bubbles: true }));
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   async function choose(kind, value, alternates) {
     const target = String(value);
-    const trigger = Array.from(document.querySelectorAll('[role="combobox"],button')).find(
-      (el) => shown(el) && String(el.getAttribute("aria-label") || "").toLowerCase() === kind
-    );
+    const select = triggerFor(kind);
+    if (select && select.tagName === "SELECT") {
+      return setSelect(select, target) && String(select.value) === target;
+    }
+
+    const trigger = select || triggerFor(kind);
     if (!trigger) return false;
-    if (String(trigger.innerText || "").trim() === target) return true;
+    const current = nameOf(trigger);
+    if (current === target) return true;
+
     click(trigger);
-    await sleep(400);
-    // Radix renders the items as buttons with data-radix-collection-item, not
-    // as [role="option"] — the docs in SSO_SETUP have the measured detail.
+    await sleep(450);
+
+    // Radix items are buttons with data-radix-collection-item, not role=option.
     const options = Array.from(
       document.querySelectorAll(
         '[role="option"], [data-radix-collection-item], [role="listbox"] li, [role="listbox"] button'
@@ -449,40 +494,72 @@ async function uiFinaliseStep(birthday, username, gender, acceptTerms) {
     ).filter(shown);
     const pool = [target, ...(alternates || [])];
     const hit = pool
-      .map((want) => options.find((el) => String(el.innerText || "").trim() === want))
+      .map((want) => options.find((el) => nameOf(el) === want))
       .find(Boolean);
-    if (!hit) return false;
+    if (!hit) {
+      // Close the listbox (not the dialog) so the next field is not blocked.
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await sleep(250);
+      return false;
+    }
     click(hit);
-    await sleep(300);
-    return true;
+    await sleep(350);
+
+    // Confirm the trigger now shows the value; a click that did not take is the
+    // difference between "trying" and "done".
+    return nameOf(trigger) === target;
   }
 
-  report.month = await choose("month", MONTHS[Math.max(0, month - 1)], [String(month)]);
-  report.day = await choose("day", String(day), [String(day).padStart(2, "0")]);
-  report.year = await choose("year", String(year), []);
+  report.month = await choose("month", MONTH, [String(month)]);
+  report.day = await choose("day", DAY, [DAY.padStart(2, "0")]);
+  report.year = await choose("year", YEAR, []);
   report.gender = await choose("gender", GENDERS[Number(gender)] || GENDERS[1], []);
 
-  // A select-based layout appears on some rollouts; setting it is harmless when
-  // the comboboxes already handled it.
-  for (const [label, value] of [
-    ["Month", MONTHS[Math.max(0, month - 1)]],
-    ["Day", String(day)],
-    ["Year", String(year)],
-  ]) {
-    const select = document.querySelector(`select[aria-label="${label}"], select[name="${label}"]`);
-    if (select && select.value !== value) {
-      select.value = value;
-      select.dispatchEvent(new Event("change", { bubbles: true }));
+  // 4. Continue. Prefer the button inside the open dialog; a page-wide search
+  // can find an unrelated "continue" (cookie banner, help widget).
+  const scope = document.querySelector('[role="dialog"],#modal-dialog') || document;
+  let candidates = Array.from(
+    scope.querySelectorAll('button,[role="button"],input[type="submit"],a')
+  ).filter(shown);
+  if (!candidates.length) {
+    candidates = Array.from(
+      document.querySelectorAll('button,[role="button"],input[type="submit"],a')
+    ).filter(shown);
+  }
+  const next = candidates.find(
+    (el) =>
+      /^(continue|submit|done|next|finish)$/i.test(nameOf(el)) ||
+      /^(continue|submit|done|next|finish)$/i.test(String(el.value || ""))
+  );
+  report.nextDisabled = Boolean(next && next.disabled);
+
+  // A rejected username keeps Continue disabled. Put Roblox's own name back so
+  // the account can still finish; the run keeps the generated name.
+  if (report.nextDisabled && report.username && originalUsername !== null) {
+    try {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+      setter.call(usernameField, originalUsername);
+      usernameField.dispatchEvent(new Event("input", { bubbles: true }));
+      usernameField.dispatchEvent(new Event("change", { bubbles: true }));
+      report.username = false;
+      report.usernameReverted = true;
+    } catch (_) {
+      // leave it; the diagnostic below will show the disabled button
     }
   }
 
-  // 4. Continue.
-  const next = findButton(/^(continue|submit|done|next|finish)$/i);
-  if (next) {
+  if (next && !next.disabled) {
     report.next = click(next);
     await sleep(1200);
   }
 
+  report.controls = ["month", "day", "year"]
+    .map((kind) => {
+      const el = triggerFor(kind);
+      return el ? `${kind}=${nameOf(el)}` : `${kind}=?`;
+    })
+    .join(" · ");
+  report.buttons = candidates.slice(0, 10).map(nameOf).filter(Boolean).join(" | ");
   report.text = String(document.body ? document.body.innerText : "")
     .replace(/\s+/g, " ")
     .slice(0, 220);
@@ -786,6 +863,8 @@ async function finaliseOnTab(tabId, timeout, shouldStop, log, options = {}) {
   const deadline = Date.now() + budget;
   let step = null;
   let lastText = "";
+  let lastDid = "";
+  let lastDiag = "";
   let attempts = 0;
 
   while (Date.now() < deadline) {
@@ -832,7 +911,26 @@ async function finaliseOnTab(tabId, timeout, shouldStop, log, options = {}) {
       const did = ["agree", "username", "month", "day", "year", "gender", "next"]
         .filter((key) => step[key])
         .join(", ");
-      if (did) log(`ui finalise: ${did}`);
+      if (did && did !== lastDid) {
+        lastDid = did;
+        log(`ui finalise: ${did}`);
+      }
+      if (step.usernameReverted) {
+        log("ui finalise: chosen username was rejected — kept Roblox's generated name");
+      }
+      if (!step.next) {
+        // The page is not moving because something is missing or disabled. Say
+        // exactly which control holds which value, once, instead of retrying
+        // silently until the budget runs out.
+        const diag =
+          `ui finalise stuck · ${step.controls || "no birthday controls"}` +
+          `${step.nextDisabled ? " · continue disabled" : ""}` +
+          ` · buttons: ${step.buttons || "none"}`;
+        if (diag !== lastDiag) {
+          lastDiag = diag;
+          log(diag);
+        }
+      }
     }
     await sleep(2200);
   }
