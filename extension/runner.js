@@ -218,8 +218,8 @@ function renderSettings() {
   const openOnInstall = $("open-on-install");
   if (openOnInstall) openOnInstall.checked = settings.openOnInstall !== false;
 
-  const laneMode = $("lane-mode");
-  if (laneMode) laneMode.value = settings.laneMode === "tabs" ? "tabs" : "windows";
+  const laneSurface = $("lane-surface");
+  if (laneSurface) laneSurface.value = settings.laneSurface === "window" ? "window" : "tab";
 
   const deleteBatch = $("delete-batch");
   if (deleteBatch) deleteBatch.value = String(settings.deleteBatch || 5);
@@ -593,10 +593,6 @@ async function exportAccounts(silent = false) {
   } catch (error) {
     await remember(`export failed: ${error.message || error}`, "error");
   }
-}
-
-async function downloadText(filename, text) {
-  await saveTextFile(filename, text, true);
 }
 
 // ------------------------------------------------------------------- key setup
@@ -1223,7 +1219,7 @@ async function runBatch(queue, preflight) {
             birthday: profile.birthday,
             gender: profile.gender,
             acceptTerms: settings.acceptTerms !== false,
-            laneMode: settings.laneMode === "tabs" ? "tabs" : "windows",
+            laneSurface: settings.laneSurface === "window" ? "window" : "tab",
             onSession: async (cookie) => {
               provisional = {
                 id: uid("acc"),
@@ -2200,10 +2196,10 @@ function wire() {
     });
   });
 
-  $("lane-mode").addEventListener("change", async (event) => {
-    const value = event.target.value === "tabs" ? "tabs" : "windows";
+  $("lane-surface").addEventListener("change", async (event) => {
+    const value = event.target.value === "window" ? "window" : "tab";
     await mutate((draft) => {
-      draft.settings.laneMode = value;
+      draft.settings.laneSurface = value;
     });
     await refresh();
   });

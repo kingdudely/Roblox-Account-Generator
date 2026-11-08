@@ -29,10 +29,17 @@
   },
   "content_scripts": [
     {
+      "matches": ["https://accounts.google.com/*"],
+      "js": ["content/awake.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
+    {
       "matches": ["https://accounts.google.com/*", "https://*.google.com/*"],
       "js": ["content/google.js"],
       "run_at": "document_idle",
-      "all_frames": true
+      "all_frames": false
     }
   ]
 }

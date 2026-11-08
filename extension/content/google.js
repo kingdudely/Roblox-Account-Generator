@@ -5,19 +5,35 @@
 // It never starts on its own: the runner hands it credentials for one identity.
 
 (() => {
+  // Two copies of this file in one document are two state machines: two timers,
+  // two fills, two clicks on the same button, two "backup code entered" lines.
+  // That is how one code got submitted a dozen times. First copy wins.
+  if (globalThis.__racGoogle) return;
+  globalThis.__racGoogle = true;
+
   const api = globalThis.browser ?? globalThis.chrome;
+
+  // How long the same action is held off for. Long enough to survive an SPA
+  // rerender, short enough that a genuine retry is not delayed into the next
+  // screen.
+  const DEBOUNCE_MS = 2600;
+  // Google locks a sign-in after a handful of bad codes, so the list is walked
+  // three deep and then the lane stops with the reason instead of grinding.
+  const MAX_CODES = 3;
+  const CODE_REFUSED = /didn.?t work|wrong|not valid|invalid|incorrect|already (been )?used|expired/i;
 
   const state = {
     creds: null,
     timer: null,
     lastAction: "",
     lastAt: 0,
-    repeats: 0,
     triedAnotherWay: false,
     codeSubmitted: false,
     codes: [],
     codeIndex: 0,
     codeAt: 0,
+    codeTried: -1,
+    codeBody: "",
     otpSecret: "",
     otpSubmitted: false,
     enrolled: false,
@@ -251,8 +267,13 @@
     }, delay);
   }
 
+  // Scored, not first-match: the challenge screen can carry more than one
+  // visible input, and typing a backup code into the wrong one reads as "wrong
+  // code" without Google ever having seen it.
   function codeField() {
     const inputs = [...document.querySelectorAll("input")].filter(visible);
+    let best = null;
+    let bestScore = 0;
     for (const input of inputs) {
       const type = (input.type || "text").toLowerCase();
       if (type === "password" || type === "email" || type === "checkbox") continue;
@@ -262,29 +283,55 @@
       if (/^[A-Z2-7]{16,32}$/.test(String(input.value || "").replace(/[\s-]/g, ""))) continue;
       const hints = `${input.getAttribute("aria-label") || ""} ${input.name || ""} ${
         input.placeholder || ""
-      }`.toLowerCase();
-      if (/code|backup|verify|otp/.test(hints)) return input;
-      if (type === "tel") return input;
-      if (input.maxLength > 0 && input.maxLength <= 12 && input.autocomplete !== "username") {
-        return input;
+      } ${input.id || ""}`.toLowerCase();
+      let score = 0;
+      if (input.autocomplete === "one-time-code") score += 6;
+      if (/backup|verification code|one-time/.test(hints)) score += 5;
+      if (/code|otp|verify/.test(hints)) score += 3;
+      if (Number(input.maxLength) === 8) score += 4;
+      if (Number(input.maxLength) > 0 && Number(input.maxLength) <= 12) score += 1;
+      if (type === "tel") score += 2;
+      if (type === "text" || type === "tel" || type === "number") score += 1;
+      if (score > bestScore) {
+        best = input;
+        bestScore = score;
       }
     }
-    return document.querySelector("#backupCodePin");
+    return best || document.querySelector("#backupCodePin");
   }
 
-  // Debounce: the same action may look needed for several ticks while the SPA
-  // rerenders. Repeating a click is how a flow gets two submissions in.
+  // One line in the log describing the field we typed into, so the next bad
+  // code arrives with the shape of the screen that refused it.
+  function fieldFingerprint(field) {
+    if (!field) return "none";
+    return [
+      field.tagName.toLowerCase(),
+      field.type || "text",
+      `max=${field.maxLength}`,
+      field.autocomplete || "-",
+      (field.getAttribute("aria-label") || "-").slice(0, 40),
+    ].join(" ");
+  }
+
+  // Debounce only: the same action may look needed for several ticks while the
+  // SPA rerenders, and repeating a click is how a flow gets two submissions in.
+  // Each run resets the clock. There is deliberately no "repeats" budget — the
+  // old one ran out after three skips and turned this back into run-every-tick.
   function act(key, run) {
     const now = Date.now();
-    if (state.lastAction === key && now - state.lastAt < 2600 && state.repeats < 3) {
-      state.repeats += 1;
-      return true;
-    }
-    if (state.lastAction !== key) state.repeats = 0;
+    if (state.lastAction === key && now - state.lastAt < DEBOUNCE_MS) return true;
     state.lastAction = key;
     state.lastAt = now;
-    const outcome = run();
-    return Boolean(outcome);
+    return Boolean(run());
+  }
+
+  // Google states the reason inline and moves on; the sentence is worth more in
+  // the log than "refused", because it separates a spent code from a wrong one.
+  function describeRefusal(body) {
+    const hit = body.match(
+      /[^.\n]{0,80}(didn.?t work|wrong|not valid|invalid|incorrect|already (been )?used|expired)[^.\n]{0,60}/i
+    );
+    return hit ? hit[0].replace(/\s+/g, " ").trim().slice(0, 120) : "no error text";
   }
 
   function tick() {
@@ -308,12 +355,6 @@
       // A TOTP is reusable and time-based: a new page that asks for it again
       // (enrolment -> challenge) must be allowed to answer.
       state.otpSubmitted = false;
-      // A code typed on the previous screen was consumed whether it worked or
-      // not, so the next screen starts from the following one.
-      if (state.codeAt) {
-        state.codeIndex += 1;
-        state.codeAt = 0;
-      }
     }
 
     // identifier
@@ -496,44 +537,60 @@
       return;
     }
 
-    // backup code entry. Every code is single-use, so a refusal has to advance
-    // to the next one instead of latching the lane on a code that is already
-    // spent. A successful entry navigates away, so "field still here" is the
-    // signal that this one was rejected.
+    // backup code entry. Every code is single-use, so a refusal advances to the
+    // next one instead of latching the lane on a code that is already spent. A
+    // success navigates away, so "the field is still here" is the signal that
+    // this one did not take — but only after Google has had time to say why.
     const codes = state.codes.length ? state.codes : code ? [code] : [];
+    const limit = Math.min(codes.length, MAX_CODES);
     const challengeOffersCode =
       body.includes("backup code") || body.includes("one of your backup codes");
 
-    if (challengeOffersCode && codes.length) {
+    if (challengeOffersCode && limit) {
       const field = codeField();
       const open = Boolean(field && visible(field));
+      // Only *new* text counts. The challenge screen carries help copy that can
+      // contain "invalid" before anything has been typed, so the refusal has to
+      // be a change from what the screen looked like at submit time.
+      const refused = body !== state.codeBody && CODE_REFUSED.test(body);
 
-      // A refusal shows an error in place; a slow success navigates away. Wait
-      // for the error when we can see one, otherwise give the page a wide berth
-      // before assuming the code was spent.
-      const refused = /didn.t work|invalid|incorrect|isn.t valid|valid backup code/i.test(body);
-      const stale = state.codeAt && Date.now() - state.codeAt;
-      if (open && stale > (refused ? 2500 : 8000)) {
-        state.codeAt = 0;
-        state.codeIndex += 1;
-        state.lastAction = "";
-        if (state.codeIndex >= codes.length) {
-          once("codes-out", `all ${codes.length} backup codes were refused`);
-        } else {
-          note(`backup code refused — moving to ${state.codeIndex + 1}/${codes.length}`);
+      if (open && state.codeTried >= 0) {
+        const held = Date.now() - state.codeAt;
+        // An error is answered in place within a second or two; a slow success
+        // is given a much wider berth before the code is written off.
+        if ((refused && held > 3000) || held > 14_000) {
+          const why = describeRefusal(body);
+          state.codeTried = -1;
+          state.codeAt = 0;
+          state.codeBody = "";
+          state.codeIndex += 1;
+          state.lastAction = "";
+          if (state.codeIndex >= limit) {
+            once("codes-out", `no backup code accepted after ${limit} tries (${why})`);
+          } else {
+            note(`code ${state.codeIndex} refused (${why}) — trying ${state.codeIndex + 1}/${limit}`);
+          }
         }
       }
 
-      if (open && state.codeIndex < codes.length) {
-        act(`code-${state.codeIndex}`, () => {
-          const value = codes[state.codeIndex];
-          fill(field, value);
+      if (open && state.codeIndex < limit) {
+        // One shot per index. The old code re-ran the same entry on every tick,
+        // retyped the same rejected value and refreshed its own timeout, so the
+        // list never advanced and Google saw a burst of bad submits.
+        if (state.codeTried !== state.codeIndex) {
+          const value = String(codes[state.codeIndex]).replace(/[\s-]/g, "");
+          state.codeTried = state.codeIndex;
           state.codeAt = Date.now();
           state.codeSubmitted = true;
-          note(`backup code ${state.codeIndex + 1}/${codes.length} entered`);
+          state.codeBody = body;
+          fill(field, value);
+          once("code-field", `typing into ${fieldFingerprint(field)}`);
+          note(
+            `backup code ${state.codeIndex + 1}/${limit} entered ` +
+              `(${value.length} chars, ${value.slice(0, 2)}…)`
+          );
           submitAfter(field, value);
-          return true;
-        });
+        }
         return;
       }
 
@@ -556,7 +613,7 @@
 
     // A backup-code challenge with nothing to type into it would loop on the
     // method list, so say so instead of clicking through to a dead end.
-    if (challengeOffersCode && !codes.length) {
+    if (challengeOffersCode && !limit) {
       once("no-codes", "backup-code challenge but this identity has no stored code");
       return;
     }
@@ -651,6 +708,8 @@
         state.codeSubmitted = false;
         state.codeIndex = 0;
         state.codeAt = 0;
+        state.codeTried = -1;
+        state.codeBody = "";
         state.otpSecret = "";
         state.otpSubmitted = false;
         state.enrolled = false;

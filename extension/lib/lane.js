@@ -58,14 +58,14 @@ async function getTab(tabId) {
   }
 }
 
-// A lane needs a *visible* document, not merely an open tab. Google's sign-in
-// UI is an rAF-driven SPA: a background tab never receives animation frames, so
-// the field fills, the click dispatches, and the transition never runs. One
-// small window per lane keeps the tab selected, which is the only thing Firefox
-// treats as "visible" — occlusion is not part of its visibility model, so these
-// windows are free to overlap or sit behind the runner.
-export async function openLaneSurface(storeId, url, lane, mode) {
-  if (mode !== "windows" || !api.windows) {
+// A lane's surface. "tab" is a plain background tab: nothing on screen, and
+// content/awake.js (MAIN world) makes the page believe it is selected and gives
+// it a frame clock that does not depend on being painted. "window" is the
+// always-visible fallback — one small window per lane with its tab selected,
+// which is the only thing Firefox treats as "visible"; occlusion is not part of
+// its visibility model, so those windows may overlap or sit behind the runner.
+export async function openLaneSurface(storeId, url, lane, surface = "tab") {
+  if (surface !== "window" || !api.windows) {
     const tab = await api.tabs.create(tabOptions(storeId, { url, active: false }));
     return { tabId: tab.id, windowId: null, ownWindow: false };
   }
@@ -107,7 +107,13 @@ export async function closeLaneSurface(surface) {
   await closeTab(surface.tabId);
 }
 
+// A lane in "tab" mode is a background tab: nothing appears on screen, and the
+// awake shim (content/awake.js, MAIN world) supplies the frame clock and the
+// visibility answer the page expects. "window" mode is the old, always-visible
+// fallback for a machine where the shim cannot win — a page that froze its own
+// visibility getters, or a browser that refuses MAIN-world injection.
 export async function laneVisibility(tabId) {
+  let seen = null;
   try {
     const results = await api.scripting.executeScript({
       target: { tabId },
@@ -117,10 +123,32 @@ export async function laneVisibility(tabId) {
         url: location.href,
       }),
     });
-    return results?.[0]?.result ?? null;
+    seen = results?.[0]?.result ?? null;
   } catch (_) {
     return null;
   }
+
+  // The shim lives in the page's own world, where an isolated content script
+  // cannot see it. Asking the main world for its frame count is the only honest
+  // measure of whether a hidden lane is actually advancing.
+  try {
+    const main = await api.scripting.executeScript({
+      target: { tabId },
+      world: "MAIN",
+      func: () => ({
+        patched: Boolean(window.__racAwake && window.__racAwake.patched),
+        frames: (window.__racAwake && window.__racAwake.frames) || 0,
+        native:
+          window.__racAwake && window.__racAwake.nativeVisibility
+            ? window.__racAwake.nativeVisibility()
+            : "unknown",
+      }),
+    });
+    seen.awake = main?.[0]?.result ?? null;
+  } catch (_) {
+    seen.awake = null;
+  }
+  return seen;
 }
 
 export async function waitComplete(tabId, timeout, shouldStop) {
@@ -602,9 +630,12 @@ async function pumpCredentials(tab, identity, timeout, shouldStop, storeId, log,
   let lastNote = 0;
   let lastProbe = 0;
   let sent = 0;
+  let misses = 0;
   let closedNoted = false;
   let visibility = null;
   let raised = false;
+  let warnedStall = false;
+  let zeroFrames = 0;
 
   while (Date.now() < deadline) {
     if (shouldStop && shouldStop()) throw new Error("stopped");
@@ -641,31 +672,48 @@ async function pumpCredentials(tab, identity, timeout, shouldStop, storeId, log,
             "",
         });
         sent += 1;
+        misses = 0;
       } catch (_) {
-        // The content script may not be in this document yet (host permission
-        // granted after the tab opened, or a frame navigation). Inject it once.
-        try {
-          await api.scripting.executeScript({
-            target: { tabId: tab.id },
-            files: ["content/google.js"],
-          });
-        } catch (_) {
-          // keep waiting; the declared content script may still arrive
-        }
+        // The declared content script runs at document_idle, so the first
+        // handoff can arrive before it does. The old fallback injected the file
+        // by hand — which is a *second* state machine in the same document,
+        // two fills and two submits on one field. Wait for the real one.
+        misses += 1;
+        if (misses === 15) log("no google agent in the tab yet — still waiting for it");
       }
     }
 
-    // Visibility is the thing that decides whether a Google page can advance at
-    // all, so record it rather than guessing from a stalled screen.
+    // The point of the awake shim is that a hidden lane still advances, so log
+    // both halves: what the tab claims and how many frames the page actually
+    // received from the shim.
     if (Date.now() - lastProbe > 6000) {
       lastProbe = Date.now();
       const seen = await laneVisibility(tab.id);
-      if (seen && seen.state !== visibility) {
-        visibility = seen.state;
-        log(`google tab is ${visibility}${seen.focus ? " · focused" : ""}`);
-        if (visibility === "hidden" && surface?.windowId && !raised) {
+      if (seen) {
+        const awake = seen.awake;
+        const signature = `${seen.state}:${awake?.patched ? awake.frames > 0 : "none"}`;
+        if (signature !== visibility) {
+          visibility = signature;
+          const parts = [`google tab is ${seen.state}`];
+          if (awake) {
+            parts.push(
+              awake.patched
+                ? `awake shim · ${awake.frames} frames`
+                : `no awake shim · native ${awake.native}`
+            );
+          }
+          log(parts.join(" · "));
+        }
+        if (seen.state === "hidden" && awake && awake.patched && awake.frames === 0) {
+          zeroFrames += 1;
+          if (zeroFrames === 3 && !warnedStall) {
+            warnedStall = true;
+            log("hidden lane with no frames — the shim is installed but never ticked");
+          }
+        }
+        if (seen.state === "hidden" && surface?.windowId && !raised) {
           raised = true;
-          log("hidden lane — raising its window; switch lane mode to windows to stop this");
+          log("hidden lane — raising its window; switch lane surface to a tab to stop this");
           try {
             await api.windows.update(surface.windowId, { focused: true });
           } catch (_) {
@@ -776,7 +824,7 @@ export async function runIdentity(options) {
     birthday = "1996-05-15",
     gender = 1,
     acceptTerms = true,
-    laneMode = "windows",
+    laneSurface = "tab",
   } = options;
 
   const started = Date.now();
@@ -792,7 +840,7 @@ export async function runIdentity(options) {
     const wiped = await clearSiteCookies(storeId);
     if (wiped) logFor(`cleared ${wiped} stale cookies`);
 
-    surface = await openLaneSurface(storeId, SSO_INIT, lane, laneMode);
+    surface = await openLaneSurface(storeId, SSO_INIT, lane, laneSurface);
     tabId = surface.tabId;
     logFor(
       `${identity.email} · sso init opened` +

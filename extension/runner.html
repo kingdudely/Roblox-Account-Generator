@@ -579,18 +579,20 @@
               <div class="controls">
                 <label class="field">
                   <span>Lane surface</span>
-                  <select id="lane-mode">
-                    <option value="windows">Own window per lane (recommended)</option>
-                    <option value="tabs">Background tab, single window</option>
+                  <select id="lane-surface">
+                    <option value="tab">Background tab &mdash; nothing on screen (default)</option>
+                    <option value="window">Own window per lane &mdash; visible</option>
                   </select>
                 </label>
               </div>
               <p class="note">
-                Google's sign-in page advances on animation frames, and a browser only paints frames
-                for the selected tab. <b>Own window</b> gives every lane a small window with its tab
-                selected, so the page can move while you are looking somewhere else. <b>Background
-                tab</b> keeps one window but stalls whenever the tab is not selected &mdash; it is here
-                for a machine that cannot cope with several windows.
+                A hidden tab normally gets no animation frames, and Google's sign-in page is built
+                on them &mdash; the field fills, the click lands, and the next screen never appears.
+                <b>Background tab</b> injects a small shim into the page's own world that supplies
+                the frame clock and answers <span class="mono">visibilityState</span>, so lanes run
+                with no window on screen at all. <b>Own window</b> is the old always-visible
+                fallback, for the case where a page manages to freeze its own visibility getters.
+                The log says which one a lane is using and how many frames it has received.
               </p>
             </div>
 

@@ -9,12 +9,12 @@ export const DEFAULT_SETTINGS = {
   timeout: 240,
   autoExport: true,
   openOnInstall: true,
-  // How a lane presents its page. "windows" gives every lane its own small
-  // window with the tab selected, so document.visibilityState is "visible" —
-  // Google's sign-in UI drives its transitions off requestAnimationFrame, and
-  // a background tab never gets those frames. "tabs" is the old single-window
-  // behaviour and stalls whenever the tab is not selected.
-  laneMode: "windows",
+  // How a lane presents its page. "tab" is a plain background tab: nothing
+  // appears on screen, and content/awake.js supplies the frame clock and the
+  // visibility answer Google's sign-in UI waits for. "window" gives every lane
+  // its own small window with the tab selected — the always-visible fallback
+  // for a machine where the shim cannot win.
+  laneSurface: "tab",
   // Deletion pacing. Google treats a burst of deletes as an abuse signal, so a
   // "delete users" run walks a small batch at a time.
   deleteBatch: 5,

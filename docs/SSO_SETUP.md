@@ -626,37 +626,53 @@ element in JS; a coordinate click misses.
 
 ---
 
-## 8.3 Why a lane needs a *selected* tab
+### 8.3 Why a hidden tab stalls — and the shim that fixes it
 
-Measured 2026-11-07, from the run log: the same identity stalls on the password
-screen and on the backup-code screen while the lane tab is in the background, and
-the same click lands the moment the tab is selected.
+Measured 2026-11-07, from the run log: the same identity stalled on the password
+screen and on the backup-code screen while the lane tab was in the background,
+and the same click landed the moment the tab was selected.
 
-The cause is not the content script's timer. Two things happen to a background
-tab in Firefox, and only one of them is visible in the code:
+The cause is not the content script's timer. A background tab gets two kinds of
+throttling, and only one of them is visible in the code:
 
-- `setTimeout`/`setInterval` are clamped to 1000 ms — harmless, the tick is
+- `setTimeout`/`setInterval` are clamped to 1000 ms — survivable, the tick is
   900 ms and every `google-fill` handoff also runs one tick.
-- `requestAnimationFrame` is **never called** for a hidden document. Google's
-  sign-in UI is an rAF-driven SPA, so the field fills, the click dispatches, and
-  the transition that would follow it never runs.
+- `requestAnimationFrame` slows to a crawl, or stops. Google's sign-in UI is an
+  rAF-driven SPA, so the field fills, the click dispatches, and the transition
+  that would follow it never runs.
 
-`document.visibilityState` is what decides it, and Firefox derives that from tab
-selection — not from whether the window is covered. Consequences:
+`document.visibilityState` is what the page checks, and Firefox derives it from
+tab selection — not from whether the window is covered.
+
+The first fix was a window per lane. That works and is still available, but it
+puts a window on screen for every lane. The current fix is `content/awake.js`,
+declared as a `world: "MAIN"` content script at `document_start`, so it lands in
+the page's own JavaScript world before Google's bundles do:
+
+| what it replaces | why |
+|---|---|
+| `requestAnimationFrame` | rescheduled off a `MessageChannel`. Timers are clamped in a background tab; message ports are not. Frames are only produced while callbacks are queued, so an idle screen costs nothing. |
+| `Document.prototype.visibilityState` / `hidden` | answers `visible` / `false`, which is what Google's own code reads before starting a transition |
+| `Document.prototype.hasFocus` | `true`, for the same reason |
+
+The page still gets a real timestamp (`performance.now()`), and layout still
+works — `getBoundingClientRect()` forces a synchronous layout whether or not
+anything is painted.
+
+Rejected approaches, and why:
 
 | approach | result |
 |---|---|
-| background tab in the runner window | stalls (the default before this fix) |
-| `tabs.hide()` | still a background tab; still stalls. Cosmetic only. |
-| an `<iframe>` around `accounts.google.com` | impossible — the response carries `x-frame-options: DENY` |
-| one small window per lane, tab selected, `focused: false` | **works**; windows may overlap freely |
+| an `<iframe>` around `accounts.google.com` | impossible twice over: the response carries `x-frame-options: DENY`, and rAF is throttled in hidden iframes too |
+| `tabs.hide()` | still a background tab; cosmetic only |
+| `Page.setWebLifecycleState` | a CDP command, and Firefox has no debugger attachment from an extension |
+| `dom.visibilityAPI` / pref flips | not shippable from an extension, and the refresh driver is a separate mechanism anyway |
 
-So `openLaneSurface()` in `lib/lane.js` creates a window per lane. The runner logs
-`google tab is visible` / `hidden` on every lane, and if a lane is somehow hidden
-for more than a few seconds it raises that lane's window once and says so. Setting
-**Lanes → Lane surface** back to *Background tab* restores the old behaviour for a
-machine that cannot cope with several windows, and the log will then show exactly
-which lanes stalled and why.
+The runner logs the truth on every lane, e.g. `google tab is hidden · awake shim ·
+412 frames`, by reading `window.__racAwake` back from the main world. If it says
+`no awake shim`, the page froze its own getters or the browser refused
+MAIN-world injection — set **Settings → Lanes → Lane surface** to *Own window*
+and that lane behaves exactly as it did before.
 
 ---
 
