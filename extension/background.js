@@ -29,25 +29,33 @@ async function hydrateProxies() {
 
 hydrateProxies().catch(() => {});
 
-if (api.proxy && api.proxy.onRequest) {
-  api.proxy.onRequest.addListener((details) => {
-    const storeId = details && details.cookieStoreId;
-    if (!storeId) return undefined;
-    if (laneProxies.has(storeId)) return laneProxies.get(storeId);
-    if (proxiesHydrated) return undefined;
-    // First request after a cold start: answer from storage rather than let the
-    // lane out through the home address.
-    return hydrateProxies().then((map) => map.get(storeId) || undefined);
-  });
-
-  if (api.proxy.onError) {
-    api.proxy.onError.addListener((error) => {
-      appendLog({
-        level: "warn",
-        text: `proxy: ${error && error.message ? error.message : error}`,
-      });
+// Optional subsystems must never be able to abort the script before the message
+// listener is registered: a background that dies here takes the whole console
+// with it, which is exactly the wrong failure mode for a tool you debug by log.
+try {
+  if (api.proxy && api.proxy.onRequest) {
+    api.proxy.onRequest.addListener((details) => {
+      const storeId = details && details.cookieStoreId;
+      if (!storeId) return undefined;
+      if (laneProxies.has(storeId)) return laneProxies.get(storeId);
+      if (proxiesHydrated) return undefined;
+      // First request after a cold start: answer from storage rather than let the
+      // lane out through the home address.
+      return hydrateProxies().then((map) => map.get(storeId) || undefined);
     });
+
+    if (api.proxy.onError) {
+      api.proxy.onError.addListener((error) => {
+        appendLog({
+          level: "warn",
+          text: `proxy: ${error && error.message ? error.message : error}`,
+        });
+      });
+    }
   }
+} catch (_) {
+  // No proxy permission, or an API that is not available in this build. Lanes
+  // simply go direct.
 }
 
 async function openRunner() {
@@ -81,7 +89,8 @@ api.runtime.onInstalled.addListener((details) => {
 // A runner tab from a previous session points at a dead moz-extension origin
 // when the add-on was loaded temporarily, so come back through the current one
 // instead of letting the restored tab 404.
-api.runtime.onStartup.addListener(() => {
+const onStartup = (api.runtime && api.runtime.onStartup) || null;
+if (onStartup) onStartup.addListener(() => {
   api.storage.local
     .get(STATE_KEY)
     .then((bag) => {
@@ -99,6 +108,7 @@ async function appendLog(message) {
     t: Date.now(),
     level: message.level || "info",
     text: String(message.text ?? "").slice(0, 4000),
+    cid: message.cid || null,
   };
   log.push(line);
   await api.storage.local.set({ [LOG_KEY]: log.slice(-LOG_CAP) });

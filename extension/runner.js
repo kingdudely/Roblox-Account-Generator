@@ -3,7 +3,7 @@
 
 import { api, isFirefox, uid, sleep, mapLimit, withTimeout, STATE_KEY } from "./lib/api.js";
 import { load, mutate, wipeRecords } from "./lib/store.js";
-import { log, stamp } from "./lib/log.js";
+import { log, stamp, CLIENT_ID } from "./lib/log.js";
 import { parseKeysText } from "./lib/keys.js";
 import * as admin from "./lib/admin.js";
 import { ensureContainer, runIdentity, retryFinalise } from "./lib/lane.js";
@@ -69,8 +69,16 @@ async function refresh() {
 }
 
 async function remember(message, level = "info") {
+  const text = String(message);
+  // Append before anything else. The console is the only place a run explains
+  // itself, and it used to depend entirely on a round-trip to the background —
+  // a background that failed to start left it silent with no clue why.
+  const line = { t: Date.now(), level, text, cid: CLIENT_ID };
+  state.log = [...(state.log || []), line].slice(-2000);
+  appendLogNode(line);
+
   const write = log[level] || log.info;
-  write(message);
+  write(text);
 }
 
 // ------------------------------------------------------------------ rendering
@@ -2792,7 +2800,8 @@ function wire() {
       remember(`${email || "identity"}: authenticator enrolled, secret saved`, "ok");
     }
     if (message?.type === "log-line" && message.line) {
-      appendLogNode(message.line);
+      // Our own lines were appended when they happened; this is the echo.
+      if (!message.line.cid || message.line.cid !== CLIENT_ID) appendLogNode(message.line);
     }
     if (message?.type === "log-cleared") {
       $("console-body").replaceChildren();
@@ -2856,6 +2865,7 @@ async function boot() {
   // Paint the wizard before the checklist's API calls: step blocks and manual
   // ticks should be right immediately, not after a round-trip to Google.
   renderSetup();
+  await remember("runner ready", "info");
   await checkBuild();
 
   setInterval(() => {
