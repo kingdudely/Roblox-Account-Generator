@@ -15,6 +15,9 @@
     repeats: 0,
     triedAnotherWay: false,
     codeSubmitted: false,
+    codes: [],
+    codeIndex: 0,
+    codeAt: 0,
     otpSecret: "",
     otpSubmitted: false,
     enrolled: false,
@@ -230,6 +233,24 @@
     return null;
   }
 
+  // A blind timer submits before the page has committed the value, and a
+  // re-render between typing and clicking is the usual way a code is lost. Read
+  // the field back first, refill once if it was cleared, then click.
+  function submitAfter(field, value, delay = 900, tries = 0) {
+    setTimeout(() => {
+      const live = field && field.isConnected ? field : codeField();
+      if (!live) return;
+      if (String(live.value || "") !== value) {
+        if (tries < 2) {
+          fill(live, value);
+          submitAfter(live, value, 600, tries + 1);
+        }
+        return;
+      }
+      pressNext();
+    }, delay);
+  }
+
   function codeField() {
     const inputs = [...document.querySelectorAll("input")].filter(visible);
     for (const input of inputs) {
@@ -274,12 +295,25 @@
     const body = bodyText();
     const { email, password, code } = state.creds;
 
+    // Google's browser-support check frame renders between steps and needs no
+    // interaction. Without this it reads as an "unrecognised screen".
+    if (location.pathname.includes("bscframe")) {
+      once("bsc-frame", "browser-support check frame");
+      return;
+    }
+
     if (state.fillUrl !== location.href) {
       state.fillUrl = location.href;
       state.fills = { identifier: 0, password: 0 };
       // A TOTP is reusable and time-based: a new page that asks for it again
       // (enrolment -> challenge) must be allowed to answer.
       state.otpSubmitted = false;
+      // A code typed on the previous screen was consumed whether it worked or
+      // not, so the next screen starts from the following one.
+      if (state.codeAt) {
+        state.codeIndex += 1;
+        state.codeAt = 0;
+      }
     }
 
     // identifier
@@ -391,7 +425,7 @@
             if (!value) return;
             fill(field, value);
             note("authenticator challenge answered");
-            setTimeout(() => pressNext(), 1400);
+            submitAfter(field, value, 1200);
           });
           return true;
         });
@@ -442,7 +476,7 @@
             if (!value) return;
             fill(field, value);
             note("authenticator code entered");
-            setTimeout(() => pressNext(), 1400);
+            submitAfter(field, value, 1200);
           });
           return true;
         });
@@ -462,30 +496,50 @@
       return;
     }
 
-    // backup code entry
-    if (
-      !state.codeSubmitted &&
-      code &&
-      (body.includes("backup code") || body.includes("one of your backup codes"))
-    ) {
-      // The field wins over the option: once the entry screen is open its body
-      // still mentions "one of your backup codes", and clicking that label again
-      // would loop without ever typing the code.
+    // backup code entry. Every code is single-use, so a refusal has to advance
+    // to the next one instead of latching the lane on a code that is already
+    // spent. A successful entry navigates away, so "field still here" is the
+    // signal that this one was rejected.
+    const codes = state.codes.length ? state.codes : code ? [code] : [];
+    const challengeOffersCode =
+      body.includes("backup code") || body.includes("one of your backup codes");
+
+    if (challengeOffersCode && codes.length) {
       const field = codeField();
-      if (field && visible(field)) {
-        act("code", () => {
-          fill(field, code);
-          note("backup code entered");
-          setTimeout(() => {
-            const still = codeField();
-            if (still && visible(still)) pressNext();
-          }, 1800);
+      const open = Boolean(field && visible(field));
+
+      // A refusal shows an error in place; a slow success navigates away. Wait
+      // for the error when we can see one, otherwise give the page a wide berth
+      // before assuming the code was spent.
+      const refused = /didn.t work|invalid|incorrect|isn.t valid|valid backup code/i.test(body);
+      const stale = state.codeAt && Date.now() - state.codeAt;
+      if (open && stale > (refused ? 2500 : 8000)) {
+        state.codeAt = 0;
+        state.codeIndex += 1;
+        state.lastAction = "";
+        if (state.codeIndex >= codes.length) {
+          once("codes-out", `all ${codes.length} backup codes were refused`);
+        } else {
+          note(`backup code refused — moving to ${state.codeIndex + 1}/${codes.length}`);
+        }
+      }
+
+      if (open && state.codeIndex < codes.length) {
+        act(`code-${state.codeIndex}`, () => {
+          const value = codes[state.codeIndex];
+          fill(field, value);
+          state.codeAt = Date.now();
           state.codeSubmitted = true;
+          note(`backup code ${state.codeIndex + 1}/${codes.length} entered`);
+          submitAfter(field, value);
           return true;
         });
         return;
       }
-      if (body.includes("enter one of your backup codes") || body.includes("use a backup code")) {
+
+      // Never click a label while the entry field is open — the screen's own
+      // heading matches the label text, and clicking it loops without typing.
+      if (!open && (body.includes("enter one of your backup codes") || body.includes("use a backup code"))) {
         act("pick-backup", () => {
           const hit = clickByText([
             "enter one of your backup codes",
@@ -497,6 +551,14 @@
         });
         return;
       }
+      return;
+    }
+
+    // A backup-code challenge with nothing to type into it would loop on the
+    // method list, so say so instead of clicking through to a dead end.
+    if (challengeOffersCode && !codes.length) {
+      once("no-codes", "backup-code challenge but this identity has no stored code");
+      return;
     }
 
     // get from a phone challenge to the method list
@@ -509,20 +571,6 @@
           "other ways to verify",
         ]);
         once("another-way", `challenge -> ${hit}`);
-        return hit;
-      });
-      return;
-    }
-
-    // method list with backup codes
-    if (!state.codeSubmitted && body.includes("backup")) {
-      act("method", () => {
-        const hit = clickByText([
-          "enter one of your backup codes",
-          "backup codes",
-          "use a backup code",
-          "backup code",
-        ]);
         return hit;
       });
       return;
@@ -573,7 +621,7 @@
       state.stuckSince = Date.now();
     }
     if (Date.now() - state.stuckSince > 8000) {
-      once("stuck", `unrecognised screen at ${location.pathname}`);
+      once("stuck", `unrecognised screen at ${location.pathname} (${document.visibilityState})`);
     }
   }
 
@@ -593,11 +641,16 @@
         code: message.code,
         otp: message.otp || "",
       };
+      // The runner sends every stored backup code; a refusal walks to the next
+      // one without the lane dying on a spent code.
+      state.codes = Array.isArray(message.codes) ? message.codes.filter(Boolean) : [];
       // A new identity means a new flow, even in the same document.
       if (state.lastEmail !== message.email) {
         state.lastEmail = message.email;
         state.triedAnotherWay = false;
         state.codeSubmitted = false;
+        state.codeIndex = 0;
+        state.codeAt = 0;
         state.otpSecret = "";
         state.otpSubmitted = false;
         state.enrolled = false;

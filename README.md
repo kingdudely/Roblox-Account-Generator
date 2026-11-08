@@ -66,6 +66,9 @@ The runner opens on install. If it does not, click the toolbar icon and choose
    sends one from the local generator, set the birthday and gender written at
    finalise (tick **random** under either to roll a fresh value per identity),
    turn the automatic terms acceptance on or off, and tune identity concurrency.
+   Two more knobs live there: **lane surface** (own window per lane, the default,
+   because Google's sign-in only advances in a selected tab) and **deletion
+   pacing**, which walks a small batch of users a minute apart instead of a burst.
 
 Accounts are written to extension storage the moment the cookie lands. Export is
 a mirror; closing the tab loses nothing.

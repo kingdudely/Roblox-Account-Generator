@@ -58,6 +58,71 @@ async function getTab(tabId) {
   }
 }
 
+// A lane needs a *visible* document, not merely an open tab. Google's sign-in
+// UI is an rAF-driven SPA: a background tab never receives animation frames, so
+// the field fills, the click dispatches, and the transition never runs. One
+// small window per lane keeps the tab selected, which is the only thing Firefox
+// treats as "visible" — occlusion is not part of its visibility model, so these
+// windows are free to overlap or sit behind the runner.
+export async function openLaneSurface(storeId, url, lane, mode) {
+  if (mode !== "windows" || !api.windows) {
+    const tab = await api.tabs.create(tabOptions(storeId, { url, active: false }));
+    return { tabId: tab.id, windowId: null, ownWindow: false };
+  }
+
+  const step = 26 * (lane % 8);
+  try {
+    const created = await api.windows.create({
+      url,
+      focused: false,
+      type: "normal",
+      width: 460,
+      height: 420,
+      left: 48 + step,
+      top: 48 + step,
+      ...(storeId ? { cookieStoreId: storeId } : {}),
+    });
+    const tab = created?.tabs?.[0];
+    if (!tab) throw new Error("window opened without a tab");
+    return { tabId: tab.id, windowId: created.id, ownWindow: true };
+  } catch (_) {
+    // A headless session, a single-window window manager, or a policy that
+    // forbids new windows: fall back to a background tab rather than failing
+    // the identity.
+    const tab = await api.tabs.create(tabOptions(storeId, { url, active: false }));
+    return { tabId: tab.id, windowId: null, ownWindow: false, fallback: true };
+  }
+}
+
+export async function closeLaneSurface(surface) {
+  if (!surface) return;
+  if (surface.windowId) {
+    try {
+      await api.windows.remove(surface.windowId);
+    } catch (_) {
+      // already gone
+    }
+    return;
+  }
+  await closeTab(surface.tabId);
+}
+
+export async function laneVisibility(tabId) {
+  try {
+    const results = await api.scripting.executeScript({
+      target: { tabId },
+      func: () => ({
+        state: document.visibilityState,
+        focus: typeof document.hasFocus === "function" ? document.hasFocus() : false,
+        url: location.href,
+      }),
+    });
+    return results?.[0]?.result ?? null;
+  } catch (_) {
+    return null;
+  }
+}
+
 export async function waitComplete(tabId, timeout, shouldStop) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
@@ -529,11 +594,17 @@ async function waitForGoogle(tabId, timeout, shouldStop, log) {
   throw new Error("sso init did not reach Google");
 }
 
-async function pumpCredentials(tab, identity, code, timeout, shouldStop, storeId, log, otpFor) {
+async function pumpCredentials(tab, identity, timeout, shouldStop, storeId, log, options = {}) {
+  const { codes = [], otpFor = null, surface = null } = options;
   const deadline = Date.now() + timeout;
+  const codeList = (Array.isArray(codes) ? codes : []).filter(Boolean);
+
   let lastNote = 0;
+  let lastProbe = 0;
   let sent = 0;
   let closedNoted = false;
+  let visibility = null;
+  let raised = false;
 
   while (Date.now() < deadline) {
     if (shouldStop && shouldStop()) throw new Error("stopped");
@@ -553,12 +624,21 @@ async function pumpCredentials(tab, identity, code, timeout, shouldStop, storeId
       }
     } else {
       try {
+        // Every handoff also runs one tick inside the page, so the flow keeps
+        // moving even when background-timer throttling would have slowed the
+        // content script's own interval.
         await api.tabs.sendMessage(tab.id, {
           type: "google-fill",
           email: identity.email,
           password: identity.password,
-          code,
-          otp: (typeof otpFor === "function" ? otpFor(identity.email) : "") || identity.otp_secret || "",
+          code: codeList[0] || "",
+          codes: codeList,
+          // Recomputed per handoff: a fresh identity's secret is captured by the
+          // content script mid-run and lands in liveOtp, not in storage yet.
+          otp:
+            (typeof otpFor === "function" ? otpFor(identity.email) : "") ||
+            identity.otp_secret ||
+            "",
         });
         sent += 1;
       } catch (_) {
@@ -571,6 +651,26 @@ async function pumpCredentials(tab, identity, code, timeout, shouldStop, storeId
           });
         } catch (_) {
           // keep waiting; the declared content script may still arrive
+        }
+      }
+    }
+
+    // Visibility is the thing that decides whether a Google page can advance at
+    // all, so record it rather than guessing from a stalled screen.
+    if (Date.now() - lastProbe > 6000) {
+      lastProbe = Date.now();
+      const seen = await laneVisibility(tab.id);
+      if (seen && seen.state !== visibility) {
+        visibility = seen.state;
+        log(`google tab is ${visibility}${seen.focus ? " · focused" : ""}`);
+        if (visibility === "hidden" && surface?.windowId && !raised) {
+          raised = true;
+          log("hidden lane — raising its window; switch lane mode to windows to stop this");
+          try {
+            await api.windows.update(surface.windowId, { focused: true });
+          } catch (_) {
+            // focus is best-effort
+          }
         }
       }
     }
@@ -676,12 +776,14 @@ export async function runIdentity(options) {
     birthday = "1996-05-15",
     gender = 1,
     acceptTerms = true,
+    laneMode = "windows",
   } = options;
 
   const started = Date.now();
   const budget = timeout * 1000;
   let tabId = null;
   let googleTab = null;
+  let surface = null;
   let holdTab = Boolean(keepTabs);
 
   const logFor = (text) => log(`[lane ${lane + 1}] ${text}`);
@@ -690,9 +792,16 @@ export async function runIdentity(options) {
     const wiped = await clearSiteCookies(storeId);
     if (wiped) logFor(`cleared ${wiped} stale cookies`);
 
-    const tab = await api.tabs.create(tabOptions(storeId, { url: SSO_INIT, active: false }));
-    tabId = tab.id;
-    logFor(`${identity.email} · sso init opened`);
+    surface = await openLaneSurface(storeId, SSO_INIT, lane, laneMode);
+    tabId = surface.tabId;
+    logFor(
+      `${identity.email} · sso init opened` +
+        (surface.ownWindow
+          ? " in its own window"
+          : surface.fallback
+            ? " in a background tab (window creation failed)"
+            : " in a background tab")
+    );
 
     try {
       googleTab = await waitForGoogle(tabId, Math.min(budget, 30_000), shouldStop, logFor);
@@ -713,16 +822,11 @@ export async function runIdentity(options) {
     }
     logFor(`google: ${(googleTab.url || "").slice(0, 90)}`);
 
-    const cookie = await pumpCredentials(
-      googleTab,
-      identity,
-      identity.codes?.[0] || "",
-      budget,
-      shouldStop,
-      storeId,
-      logFor,
-      otpFor
-    );
+    const cookie = await pumpCredentials(googleTab, identity, budget, shouldStop, storeId, logFor, {
+      codes: identity.codes || [],
+      otpFor,
+      surface,
+    });
 
     if (googleTab.id !== tabId) await closeTab(googleTab.id);
     googleTab = null;
@@ -771,7 +875,7 @@ export async function runIdentity(options) {
     };
   } finally {
     if (googleTab && googleTab.id !== tabId) await closeTab(googleTab.id);
-    if (!holdTab && tabId) await closeTab(tabId);
+    if (!holdTab && surface) await closeLaneSurface(surface);
   }
 }
 

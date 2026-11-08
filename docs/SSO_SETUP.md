@@ -626,6 +626,40 @@ element in JS; a coordinate click misses.
 
 ---
 
+## 8.3 Why a lane needs a *selected* tab
+
+Measured 2026-11-07, from the run log: the same identity stalls on the password
+screen and on the backup-code screen while the lane tab is in the background, and
+the same click lands the moment the tab is selected.
+
+The cause is not the content script's timer. Two things happen to a background
+tab in Firefox, and only one of them is visible in the code:
+
+- `setTimeout`/`setInterval` are clamped to 1000 ms — harmless, the tick is
+  900 ms and every `google-fill` handoff also runs one tick.
+- `requestAnimationFrame` is **never called** for a hidden document. Google's
+  sign-in UI is an rAF-driven SPA, so the field fills, the click dispatches, and
+  the transition that would follow it never runs.
+
+`document.visibilityState` is what decides it, and Firefox derives that from tab
+selection — not from whether the window is covered. Consequences:
+
+| approach | result |
+|---|---|
+| background tab in the runner window | stalls (the default before this fix) |
+| `tabs.hide()` | still a background tab; still stalls. Cosmetic only. |
+| an `<iframe>` around `accounts.google.com` | impossible — the response carries `x-frame-options: DENY` |
+| one small window per lane, tab selected, `focused: false` | **works**; windows may overlap freely |
+
+So `openLaneSurface()` in `lib/lane.js` creates a window per lane. The runner logs
+`google tab is visible` / `hidden` on every lane, and if a lane is somehow hidden
+for more than a few seconds it raises that lane's window once and says so. Setting
+**Lanes → Lane surface** back to *Background tab* restores the old behaviour for a
+machine that cannot cope with several windows, and the log will then show exactly
+which lanes stalled and why.
+
+---
+
 ## 9. Part 7 — verify and store
 
 Once you have a cookie, prove it before trusting it:

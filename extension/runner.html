@@ -570,6 +570,51 @@
                 safe default against Google's directory rate limit.
               </p>
             </div>
+
+            <div class="card">
+              <div class="card-head">
+                <h2>Lanes</h2>
+                <span class="hint">how a lane shows its page</span>
+              </div>
+              <div class="controls">
+                <label class="field">
+                  <span>Lane surface</span>
+                  <select id="lane-mode">
+                    <option value="windows">Own window per lane (recommended)</option>
+                    <option value="tabs">Background tab, single window</option>
+                  </select>
+                </label>
+              </div>
+              <p class="note">
+                Google's sign-in page advances on animation frames, and a browser only paints frames
+                for the selected tab. <b>Own window</b> gives every lane a small window with its tab
+                selected, so the page can move while you are looking somewhere else. <b>Background
+                tab</b> keeps one window but stalls whenever the tab is not selected &mdash; it is here
+                for a machine that cannot cope with several windows.
+              </p>
+            </div>
+
+            <div class="card">
+              <div class="card-head">
+                <h2>Deletion pacing</h2>
+                <span class="hint">Slow on purpose</span>
+              </div>
+              <div class="controls">
+                <label class="field">
+                  <span>Identities per run</span>
+                  <input id="delete-batch" type="number" min="1" max="50" value="5" />
+                </label>
+                <label class="field">
+                  <span>Seconds between</span>
+                  <input id="delete-pace" type="number" min="5" max="600" value="45" />
+                </label>
+              </div>
+              <p class="note">
+                <b>Delete users</b> on the Setup tab walks the oldest identities first, one at a time,
+                with a jittered pause. A burst of deletes is what Google's abuse filter reacts to, not
+                recycling itself &mdash; five a day from a tenant reads as ordinary staff turnover.
+              </p>
+            </div>
           </div>
         </section>
 

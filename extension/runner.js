@@ -218,6 +218,15 @@ function renderSettings() {
   const openOnInstall = $("open-on-install");
   if (openOnInstall) openOnInstall.checked = settings.openOnInstall !== false;
 
+  const laneMode = $("lane-mode");
+  if (laneMode) laneMode.value = settings.laneMode === "tabs" ? "tabs" : "windows";
+
+  const deleteBatch = $("delete-batch");
+  if (deleteBatch) deleteBatch.value = String(settings.deleteBatch || 5);
+
+  const deletePace = $("delete-pace");
+  if (deletePace) deletePace.value = String(settings.deletePaceSeconds || 45);
+
   setText("engine", isFirefox ? "Firefox · containers" : "Chrome · 1 lane");
 }
 
@@ -749,35 +758,57 @@ async function setKeyDomain(id) {
 async function deleteKeyUsers(id) {
   const key = state.keys.find((entry) => entry.id === id);
   if (!key) return;
-  const identities = state.identities.filter((identity) => identity.key_id === id);
-  if (!identities.length) {
-    await remember("no identities recorded for this key", "warn");
+  const settings = state.settings || {};
+  const batch = Math.max(1, Math.min(50, Number(settings.deleteBatch) || 5));
+  const pace = Math.max(5, Math.min(600, Number(settings.deletePaceSeconds) || 45));
+
+  // Oldest first: Google reads a tenant as ordinary staff turnover when the
+  // accounts leaving are the ones that have been there longest, and a burst of
+  // deletes is what its abuse filter actually reacts to.
+  const candidates = state.identities
+    .filter((identity) => identity.key_id === id && identity.status !== "deleted")
+    .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));
+
+  if (!candidates.length) {
+    await remember("no live identities recorded for this key", "warn");
     return;
   }
+
+  const doomed = candidates.slice(0, batch);
   const ok = confirm(
-    `Delete ${identities.length} identities from ${key.domain || key.label}?\n\n` +
-      "Seats are freed immediately. Addresses stay reserved for about 20 days and a 412 flag never clears."
+    `Delete ${doomed.length} of ${candidates.length} identities from ${key.domain || key.label}?\n\n` +
+      `Paced about ${pace}s apart, oldest first. Both numbers live in Settings — a burst of deletes ` +
+      "is what Google's abuse filter answers to. Seats free immediately; addresses stay reserved " +
+      "for about 20 days."
   );
   if (!ok) return;
 
-  await remember(`deleting ${identities.length} identities...`, "step");
-  try {
-    await mapLimit(identities, 8, async (identity) => {
-      try {
-        await admin.deleteUser(key, identity.email);
-      } catch (error) {
-        await remember(`${identity.email}: ${error.message || error}`, "warn");
-      }
-    });
+  await remember(`deleting ${doomed.length} identities, ~${pace}s apart...`, "step");
+  const removed = new Set();
+
+  for (const [index, identity] of doomed.entries()) {
+    if (index) {
+      const wait = pace * 1000 + Math.floor(Math.random() * pace * 200);
+      await remember(`holding ${Math.round(wait / 1000)}s before the next delete`, "info");
+      await sleep(wait);
+    }
+    try {
+      await admin.deleteUser(key, identity.email);
+      removed.add(identity.id);
+      await remember(`${identity.email}: deleted (${index + 1}/${doomed.length})`, "ok");
+    } catch (error) {
+      await remember(`${identity.email}: ${error.message || error}`, "warn");
+    }
     await mutate((draft) => {
-      for (const identity of draft.identities) {
-        if (identity.key_id === id) identity.status = "deleted";
-      }
+      const row = draft.identities.find((entry) => entry.id === identity.id);
+      if (row && removed.has(identity.id)) row.status = "deleted";
     });
-    await remember("identities deleted", "ok");
-  } catch (error) {
-    await remember(`delete failed: ${error.message || error}`, "error");
   }
+
+  await remember(
+    removed.size ? `${removed.size}/${doomed.length} identities deleted` : "nothing deleted",
+    removed.size ? "ok" : "warn"
+  );
   await refresh();
 }
 
@@ -1192,6 +1223,7 @@ async function runBatch(queue, preflight) {
             birthday: profile.birthday,
             gender: profile.gender,
             acceptTerms: settings.acceptTerms !== false,
+            laneMode: settings.laneMode === "tabs" ? "tabs" : "windows",
             onSession: async (cookie) => {
               provisional = {
                 id: uid("acc"),
@@ -2166,6 +2198,30 @@ function wire() {
     await mutate((draft) => {
       draft.settings.openOnInstall = Boolean(event.target.checked);
     });
+  });
+
+  $("lane-mode").addEventListener("change", async (event) => {
+    const value = event.target.value === "tabs" ? "tabs" : "windows";
+    await mutate((draft) => {
+      draft.settings.laneMode = value;
+    });
+    await refresh();
+  });
+
+  $("delete-batch").addEventListener("change", async (event) => {
+    const value = Math.max(1, Math.min(50, Number(event.target.value) || 5));
+    await mutate((draft) => {
+      draft.settings.deleteBatch = value;
+    });
+    await refresh();
+  });
+
+  $("delete-pace").addEventListener("change", async (event) => {
+    const value = Math.max(5, Math.min(600, Number(event.target.value) || 45));
+    await mutate((draft) => {
+      draft.settings.deletePaceSeconds = value;
+    });
+    await refresh();
   });
 
   $("add-keys").addEventListener("click", async () => {

@@ -9,6 +9,16 @@ export const DEFAULT_SETTINGS = {
   timeout: 240,
   autoExport: true,
   openOnInstall: true,
+  // How a lane presents its page. "windows" gives every lane its own small
+  // window with the tab selected, so document.visibilityState is "visible" —
+  // Google's sign-in UI drives its transitions off requestAnimationFrame, and
+  // a background tab never gets those frames. "tabs" is the old single-window
+  // behaviour and stalls whenever the tab is not selected.
+  laneMode: "windows",
+  // Deletion pacing. Google treats a burst of deletes as an abuse signal, so a
+  // "delete users" run walks a small batch at a time.
+  deleteBatch: 5,
+  deletePaceSeconds: 45,
   // finalise defaults
   usernameMode: "generated",
   birthday: "1996-05-15",
