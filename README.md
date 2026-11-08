@@ -97,3 +97,19 @@ extension/
 
 The Python pipeline that preceded the extension is not part of this tree; it
 remains in the Git history. The extension is self-contained.
+
+## Testing
+
+`tools/e2e.py` installs the unpacked extension into a throwaway Firefox, seeds
+one tenant key, runs a single identity and prints the console as it happens:
+
+```bash
+python3 tools/e2e.py --key key.json --headful
+```
+
+`key.json` is `{"client_id": …, "client_secret": …, "refresh_token": …}` for a
+tenant you own. It is never written into the repo. The harness verifies the
+manifest, the runner boot, identity creation, code minting, the container lane
+and the awake shim. It cannot clear Google's own captcha from a clean profile —
+if the log stops at `identifier for …`, that is the captcha, and `--headful`
+plus one solved image is the only way past it.

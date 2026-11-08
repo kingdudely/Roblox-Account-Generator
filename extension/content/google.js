@@ -695,9 +695,15 @@
         requestCodes("policy-challenge");
         return;
       }
+      // No usable control on the page. The page's own wording is the only
+      // evidence of *which* method Google wanted, so put it in the log.
+      const snippet = String(document.body ? document.body.innerText : "")
+        .replace(/\s+/g, " ")
+        .slice(0, 200);
       once(
         "policy",
-        "the 2SV policy offers no usable method — set Admin console → Security → Authentication → 2-Step Verification → Methods: Any except verification codes via text, phone call"
+        `2SV policy wall at ${location.pathname} — ${snippet} ` +
+          "(tenant: Admin console → Security → Authentication → 2-Step Verification → Methods)"
       );
       return;
     }
