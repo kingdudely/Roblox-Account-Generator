@@ -334,6 +334,7 @@ summary h2 {
 input[type="text"],
 input[type="number"],
 input[type="password"],
+input[type="date"],
 input:not([type]),
 select,
 textarea {

@@ -9,6 +9,11 @@ export const DEFAULT_SETTINGS = {
   timeout: 240,
   autoExport: true,
   openOnInstall: true,
+  // finalise defaults
+  usernameMode: "generated",
+  birthday: "1996-05-15",
+  gender: 1,
+  acceptTerms: true,
 };
 
 export function emptyState() {

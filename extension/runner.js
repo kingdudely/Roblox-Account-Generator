@@ -21,7 +21,7 @@ import {
   probeSendButton,
   pressSendSms,
 } from "./lib/phone.js";
-import { makeIdentityFields } from "./lib/names.js";
+import { makeIdentityFields, makeUsername } from "./lib/names.js";
 import {
   writeTxt,
   clearTxt,
@@ -154,6 +154,28 @@ function renderSettings() {
     lanes.value = "1";
     lanes.disabled = true;
   }
+
+  const usernameMode = $("username-mode");
+  if (usernameMode) usernameMode.value = settings.usernameMode === "ours" ? "ours" : "generated";
+
+  const birthday = $("birthday");
+  if (birthday) birthday.value = settings.birthday || "1996-05-15";
+
+  const gender = $("gender");
+  if (gender) gender.value = String(settings.gender || 1);
+
+  const acceptTerms = $("accept-terms");
+  if (acceptTerms) acceptTerms.checked = settings.acceptTerms !== false;
+
+  const concurrency = $("concurrency");
+  if (concurrency) {
+    concurrency.value = String(settings.concurrency || 8);
+    concurrency.disabled = false;
+  }
+
+  const openOnInstall = $("open-on-install");
+  if (openOnInstall) openOnInstall.checked = settings.openOnInstall !== false;
+
   setText("engine", isFirefox ? "Firefox · containers" : "Chrome · 1 lane");
 }
 
@@ -496,15 +518,26 @@ function accountText(account) {
   ].join("\n");
 }
 
+async function saveTextFile(filename, text, saveAs = true) {
+  // Firefox's downloads API rejects data: URLs ("Access denied for URL
+  // data:text/plain..."), so hand it a blob URL and revoke it after the save.
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  try {
+    await api.downloads.download({ url, filename, saveAs });
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  }
+}
+
 async function exportAccounts(silent = false) {
   if (!state.accounts.length) {
     if (!silent) await remember("nothing to export", "warn");
     return;
   }
   const text = state.accounts.map(accountText).join("\n\n") + "\n";
-  const url = `data:text/plain;charset=utf-8,${encodeURIComponent(text)}`;
   try {
-    await api.downloads.download({ url, filename: "roblox-accounts.txt", saveAs: !silent });
+    await saveTextFile("roblox-accounts.txt", text, !silent);
     await remember(`exported ${state.accounts.length} account(s)`, "ok");
   } catch (error) {
     await remember(`export failed: ${error.message || error}`, "error");
@@ -512,8 +545,7 @@ async function exportAccounts(silent = false) {
 }
 
 async function downloadText(filename, text) {
-  const url = `data:text/plain;charset=utf-8,${encodeURIComponent(text)}`;
-  await api.downloads.download({ url, filename, saveAs: true });
+  await saveTextFile(filename, text, true);
 }
 
 // ------------------------------------------------------------------- key setup
@@ -727,6 +759,10 @@ async function removeKey(id) {
 function planIdentities(draft, key, count) {
   const existing = draft.identities.filter((identity) => identity.key_id === key.id);
   const taken = new Set(existing.map((identity) => identity.email.toLowerCase()));
+  const ours = draft.settings?.usernameMode === "ours";
+  const usedNames = new Set(
+    draft.identities.map((identity) => identity.roblox_username).filter(Boolean)
+  );
   const planned = [];
   let index = existing.length;
 
@@ -735,6 +771,17 @@ function planIdentities(draft, key, count) {
     const fields = makeIdentityFields(key.domain, index);
     if (taken.has(fields.email)) continue;
     taken.add(fields.email);
+
+    let robloxUsername = null;
+    if (ours) {
+      let attempt = 0;
+      do {
+        robloxUsername = makeUsername(attempt);
+        attempt += 1;
+      } while (usedNames.has(robloxUsername) && attempt < 20);
+      usedNames.add(robloxUsername);
+    }
+
     planned.push({
       id: uid("idn"),
       key_id: key.id,
@@ -743,6 +790,7 @@ function planIdentities(draft, key, count) {
       first: fields.first,
       last: fields.last,
       password: fields.password,
+      roblox_username: robloxUsername,
       status: "planned",
       error: null,
       created_at: new Date().toISOString(),
@@ -949,6 +997,14 @@ async function start({ preflight = false } = {}) {
   await refresh();
   await remember(preflight ? "preflight: one account, start to finish" : "batch started", "step");
   await remember(isFirefox ? `lanes: ${state.settings.lanes}` : "Chrome: one lane, one cookie jar", "info");
+  await remember(
+    `username: ${
+      state.settings.usernameMode === "ours" ? "our generator" : "Roblox generated"
+    } · birthday ${state.settings.birthday || "1996-05-15"} · terms ${
+      state.settings.acceptTerms !== false ? "auto-accept" : "manual"
+    }`,
+    "info"
+  );
 
   let made = 0;
   const startedAt = Date.now();
@@ -1022,6 +1078,19 @@ async function runBatch(queue, preflight) {
       });
       renderQueue();
 
+      // The username is decided before the Roblox tab opens. In generated mode
+      // the finalise call omits username and Roblox keeps the SSO-generated one.
+      const usernameMode = settings.usernameMode === "ours" ? "ours" : "generated";
+      let requestedUsername = usernameMode === "ours" ? identity.roblox_username || "" : "";
+      if (usernameMode === "ours" && !requestedUsername) {
+        requestedUsername = makeUsername();
+        identity.roblox_username = requestedUsername;
+        await mutate((draft) => {
+          const row = draft.identities.find((entry) => entry.id === identity.id);
+          if (row) row.roblox_username = requestedUsername;
+        });
+      }
+
       await remember(`[lane ${laneIndex + 1}] ${identity.email}`, "step");
 
       try {
@@ -1052,6 +1121,10 @@ async function runBatch(queue, preflight) {
             shouldStop: () => stopRequested,
             log: (text) => remember(text, "info"),
             otpFor: (email) => liveOtp.get(String(email || "").toLowerCase()) || "",
+            username: requestedUsername,
+            birthday: settings.birthday || "1996-05-15",
+            gender: settings.gender || 1,
+            acceptTerms: settings.acceptTerms !== false,
             onSession: async (cookie) => {
               provisional = {
                 id: uid("acc"),
@@ -1113,6 +1186,9 @@ async function runBatch(queue, preflight) {
             row.status = live ? "account" : "failed";
             row.error = live ? null : "pending — open the tab and finalise, then retry";
             row.account_id = account.id;
+            if (live && usernameMode === "ours" && result.username) {
+              row.roblox_username = result.username;
+            }
           }
         });
 
@@ -1185,8 +1261,26 @@ async function finaliseAccount(account) {
   }
 
   try {
+    const settings = state.settings || {};
+    const usernameMode = settings.usernameMode === "ours" ? "ours" : "generated";
+    const identity = state.identities.find((entry) => entry.id === account.identity_id);
+    const requestedUsername = usernameMode === "ours"
+      ? identity?.roblox_username || makeUsername()
+      : "";
+    if (usernameMode === "ours" && requestedUsername && requestedUsername !== identity?.roblox_username) {
+      await mutate((draft) => {
+        const row = draft.identities.find((entry) => entry.id === account.identity_id);
+        if (row) row.roblox_username = requestedUsername;
+      });
+    }
+
     const result = await retryFinalise(tab.id, 60, () => false, (text) =>
-      remember(text, "info")
+      remember(text, "info"), {
+        username: requestedUsername,
+        birthday: settings.birthday || "1996-05-15",
+        gender: settings.gender || 1,
+        acceptTerms: settings.acceptTerms !== false,
+      }
     );
     if (result.session?.status === 200) {
       await mutate((draft) => {
@@ -1198,10 +1292,11 @@ async function finaliseAccount(account) {
           row.user_id = result.session.id;
           row.tab_id = null;
         }
-        const identity = draft.identities.find((entry) => entry.id === account.identity_id);
-        if (identity) {
-          identity.status = "account";
-          identity.error = null;
+        const identityRow = draft.identities.find((entry) => entry.id === account.identity_id);
+        if (identityRow) {
+          identityRow.status = "account";
+          identityRow.error = null;
+          if (usernameMode === "ours") identityRow.roblox_username = result.session.name;
         }
       });
       await remember(`${result.session.name} is live`, "ok");
@@ -1932,6 +2027,52 @@ function wire() {
   $("auto-export").addEventListener("change", async (event) => {
     await mutate((draft) => {
       draft.settings.autoExport = event.target.checked;
+    });
+  });
+
+  $("username-mode").addEventListener("change", async (event) => {
+    const value = event.target.value === "ours" ? "ours" : "generated";
+    await mutate((draft) => {
+      draft.settings.usernameMode = value;
+    });
+    await refresh();
+  });
+
+  $("birthday").addEventListener("change", async (event) => {
+    const value = /^\d{4}-\d{2}-\d{2}$/.test(event.target.value)
+      ? event.target.value
+      : "1996-05-15";
+    await mutate((draft) => {
+      draft.settings.birthday = value;
+    });
+    await refresh();
+  });
+
+  $("gender").addEventListener("change", async (event) => {
+    const value = [1, 2, 3].includes(Number(event.target.value)) ? Number(event.target.value) : 1;
+    await mutate((draft) => {
+      draft.settings.gender = value;
+    });
+    await refresh();
+  });
+
+  $("accept-terms").addEventListener("change", async (event) => {
+    await mutate((draft) => {
+      draft.settings.acceptTerms = Boolean(event.target.checked);
+    });
+  });
+
+  $("concurrency").addEventListener("change", async (event) => {
+    const value = Math.max(1, Math.min(20, Number(event.target.value) || 8));
+    await mutate((draft) => {
+      draft.settings.concurrency = value;
+    });
+    await refresh();
+  });
+
+  $("open-on-install").addEventListener("change", async (event) => {
+    await mutate((draft) => {
+      draft.settings.openOnInstall = Boolean(event.target.checked);
     });
   });
 

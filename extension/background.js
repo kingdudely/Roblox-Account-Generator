@@ -23,7 +23,15 @@ async function openRunner() {
 }
 
 api.runtime.onInstalled.addListener((details) => {
-  if (details.reason === "install") openRunner();
+  if (details.reason !== "install") return;
+  api.storage.local
+    .get(STATE_KEY)
+    .then((bag) => {
+      const settings = bag?.[STATE_KEY]?.settings || {};
+      if (settings.openOnInstall === false) return null;
+      return openRunner();
+    })
+    .catch(() => openRunner());
 });
 
 async function appendLog(message) {

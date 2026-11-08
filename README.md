@@ -59,8 +59,13 @@ The runner opens on install. If it does not, click the toolbar icon and choose
    2-Step Verification policy"*.
 3. **Run** — choose a count, press Start. Each identity gets ten minted backup
    codes; they land on the account row (`codes 10`) and in the export as
-   `backup_codes:`. The run also accepts the new-account terms interstitial and
-   enrols the authenticator app, saving the secret as `otp_secret`.
+   `backup_codes:`. The run accepts the new-account terms interstitial, enrols the
+   authenticator app (secret saved as `otp_secret`), finalises the Roblox account
+   over HTTP, and accepts the updated Roblox terms when the setting is on.
+4. **Settings** — choose whether Roblox keeps its generated username or the run
+   sends one from the local generator, set the birthday and gender written at
+   finalise, turn the automatic terms acceptance on or off, and tune identity
+   concurrency.
 
 Accounts are written to extension storage the moment the cookie lands. Export is
 a mirror; closing the tab loses nothing.

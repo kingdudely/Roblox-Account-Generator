@@ -30,6 +30,7 @@
             <button class="tab" data-tab="keys" role="tab">Keys</button>
             <button class="tab" data-tab="accounts" role="tab">Accounts</button>
             <button class="tab" data-tab="setup" role="tab">Setup</button>
+            <button class="tab" data-tab="settings" role="tab">Settings</button>
           </nav>
 
           <!-- RUN ------------------------------------------------------------------>
@@ -494,6 +495,71 @@
                 <li>Lanes need Firefox containers. Chrome has one cookie jar per profile, so it runs one lane.</li>
               </ul>
             </details>
+          </div>
+
+          <!-- SETTINGS -------------------------------------------------------------->
+          <div class="tabpanel" id="panel-settings">
+            <div class="card">
+              <div class="card-head">
+                <h2>Roblox account</h2>
+                <span class="hint">finalisation defaults</span>
+              </div>
+              <div class="controls">
+                <label class="field">
+                  <span>Username</span>
+                  <select id="username-mode">
+                    <option value="generated">Roblox generated</option>
+                    <option value="ours">Our generator</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Birthday</span>
+                  <input id="birthday" type="date" value="1996-05-15" />
+                </label>
+                <label class="field">
+                  <span>Gender</span>
+                  <select id="gender">
+                    <option value="1">Unspecified</option>
+                    <option value="2">Male</option>
+                    <option value="3">Female</option>
+                  </select>
+                </label>
+              </div>
+              <label class="field check">
+                <input id="accept-terms" type="checkbox" checked />
+                <span>Accept Roblox's updated Terms of Service automatically</span>
+              </label>
+              <p class="note">
+                <b>Roblox generated</b> keeps the name assigned during SSO signup.
+                <b>Our generator</b> sends a random name from the local word lists with the
+                finalise call and retries if the name is taken. The terms option performs the
+                same acceptance POST as the <b>I Agree</b> button on
+                <span class="mono">/not-approved</span>; turn it off if you want to review the
+                updated agreement yourself.
+              </p>
+            </div>
+
+            <div class="card">
+              <div class="card-head">
+                <h2>Run defaults</h2>
+                <span class="hint">applies to the next batch</span>
+              </div>
+              <div class="controls">
+                <label class="field">
+                  <span>Identity concurrency</span>
+                  <input id="concurrency" type="number" min="1" max="20" value="8" />
+                </label>
+                <label class="field check">
+                  <input id="open-on-install" type="checkbox" checked />
+                  <span>Open the runner on install</span>
+                </label>
+              </div>
+              <p class="note">
+                Batch count, lanes, timeout, and auto-export stay on the Run tab for quick edits.
+                Concurrency is how many identities are created in the tenant at once; eight is a
+                safe default against Google's directory rate limit.
+              </p>
+            </div>
           </div>
         </section>
 

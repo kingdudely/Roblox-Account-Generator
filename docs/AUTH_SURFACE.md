@@ -80,9 +80,11 @@ GET  /v1/account-creation/metadata         {"isEligibleForALSignup":false}
 GET  /v2/auth/metadata, /v2/metadata, /v2/recovery/metadata
 ```
 
-**Cookie-required (13 routes):** account pin CRUD/lock/unlock, `client-assertion`,
+**Cookie-required (15 routes):** account pin CRUD/lock/unlock, `client-assertion`,
 `session/refresh`, `logout`, passkey registration and listing,
-`social/connected-providers`, `xbox/*`, `account/upgrade`.
+`social/connected-providers`, `xbox/*`, `account/upgrade`,
+`user-agreements/v1/agreements-resolution/web`,
+`user-agreements/v1/acceptances`.
 
 ## Does the gate fire before or after the write?
 

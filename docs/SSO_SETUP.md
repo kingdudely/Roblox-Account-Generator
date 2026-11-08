@@ -562,7 +562,7 @@ finalised `users.roblox.com/v1/users/authenticated` answers `403 User is
 moderated` for a session that is otherwise valid — the username is right there in
 the site header.
 
-**The whole dialog is one call.** Captured from a live signup:
+**Finalising is one call.** Captured from a live signup:
 
 ```
 POST https://auth.roblox.com/v1/account/upgrade
@@ -571,12 +571,30 @@ POST https://auth.roblox.com/v1/account/upgrade
 → 200 {"userId":11944409701,"username":"ElfinPace3515"}
 ```
 
+`username` is optional. Omit it to keep the username Roblox assigned during SSO
+`signup`; send a validated name to choose one. The current frontend sends it only
+when the prefilled generated name was changed.
+
 `X-CSRF-TOKEN` is learned the usual way on this host: send without it, take the
 token from the `x-csrf-token` header on the 403, retry once.
 
-`tools/roblox_http.py` does this (`finish()` is idempotent — it validates first and
-only upgrades if the session is still pending). `tools/sso_fleet.py` calls it as
-the primary path and keeps the browser form only as a fallback.
+**The "Updated Agreements" modal is a second, separate call.** It is not part of
+`/v1/account/upgrade`. Since the November 2026 terms update, `/not-approved`
+also mounts a modal titled *Updated Agreements* with an **I Agree** button. That
+button calls the user-agreements service:
+
+```
+GET  https://apis.roblox.com/user-agreements/v1/agreements-resolution/web
+POST https://apis.roblox.com/user-agreements/v1/acceptances
+{"acceptances":[{"agreementId":"<id from the GET>"}]}
+```
+
+The POST needs the same CSRF dance: a 403 carries `x-csrf-token`, retry once.
+After a 200 the page caches `Roblox.UserAgreements =
+{"doesUserNeedToAcceptAgreements":false,"lastFetchTimestamp":"…"}` in
+`localStorage`; setting that flag and reloading is what keeps the modal from
+reappearing on a fresh container. The extension does this automatically when
+**Settings → Accept updated Terms of Service** is on.
 
 Before that call, the account answers `403`; after it, `200`:
 
@@ -586,7 +604,8 @@ after:  200 {"id":11944409701,"name":"ElfinPace3515"}
 ```
 
 So pending accounts are **recoverable** — sign in again (`sso-type=login`) and
-finalise, rather than discarding the identity.
+finalise, rather than discarding the identity. The finalise button on an account
+row retries both calls.
 
 <details>
 <summary>Doing it through the UI (kept as fallback, and why each obvious approach fails)</summary>

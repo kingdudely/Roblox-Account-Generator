@@ -3,6 +3,7 @@
 // is what lets several of them exist in one browser.
 
 import { api, isFirefox, sleep, withTimeout } from "./api.js";
+import { makeUsername } from "./names.js";
 
 export const SIGNUP = "https://www.roblox.com/CreateAccount";
 export const HOME = "https://www.roblox.com/home";
@@ -245,7 +246,7 @@ function activateSignupCta(x, y) {
 }
 
 // MAIN world, on a roblox.com page. HttpOnly cookies ride along automatically.
-async function upgradeAndValidate(birthday) {
+async function upgradeAndValidate(birthday, username, gender) {
   async function validate() {
     try {
       const response = await fetch("https://users.roblox.com/v1/users/authenticated", {
@@ -269,19 +270,22 @@ async function upgradeAndValidate(birthday) {
 
   let session = await validate();
   if (session.status === 200) {
-    return { upgrade: { status: 0, body: "already live" }, session, url: location.href };
+    return {
+      upgrade: { status: 0, body: "already live" },
+      session,
+      url: location.href,
+      username: username || null,
+    };
   }
 
-  const headers = {
-    "content-type": "application/json;charset=UTF-8",
-    origin: "https://www.roblox.com",
-    referer: "https://www.roblox.com/",
-  };
-  const payload = JSON.stringify({
+  const headers = { "content-type": "application/json;charset=UTF-8" };
+  const body = {
     upgradeType: "OAuth",
     birthday: `${birthday}T00:00:00.000Z`,
-    gender: 3,
-  });
+    gender: [1, 2, 3].includes(Number(gender)) ? Number(gender) : 1,
+  };
+  if (username) body.username = username;
+  const payload = JSON.stringify(body);
 
   async function post(token) {
     return fetch("https://auth.roblox.com/v1/account/upgrade", {
@@ -299,13 +303,121 @@ async function upgradeAndValidate(birthday) {
       const token = response.headers.get("x-csrf-token");
       if (token) response = await post(token);
     }
-    upgrade = { status: response.status, body: (await response.text()).slice(0, 300) };
+    const text = (await response.text()).slice(0, 500);
+    let code = null;
+    try {
+      const data = JSON.parse(text);
+      code = data?.errors?.[0]?.code ?? data?.code ?? null;
+    } catch (_) {
+      // plain-text error
+    }
+    upgrade = { status: response.status, code, body: text };
   } catch (error) {
     upgrade = { status: 0, body: String(error).slice(0, 200) };
   }
 
-  session = await validate();
-  return { upgrade, session, url: location.href };
+  // A fresh upgrade can take a moment to propagate to users.roblox.com.
+  for (let attempt = 0; attempt < 4 && session.status !== 200; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    session = await validate();
+  }
+
+  const usernameTaken =
+    Boolean(username) && upgrade.status === 400 && [9, 11, 12].includes(upgrade.code);
+
+  return { upgrade, session, url: location.href, username: username || null, usernameTaken };
+}
+
+// The /not-approved page also mounts an "Updated Agreements" modal. It is not
+// part of /v1/account/upgrade; accepting through this endpoint plus the page's
+// local cache flag is what makes the modal stop appearing on later loads.
+async function acceptUserAgreements() {
+  const base = "https://apis.roblox.com/user-agreements";
+  const stamp = () => new Date().toISOString();
+  const cacheAccepted = () => {
+    try {
+      localStorage.setItem(
+        "Roblox.UserAgreements",
+        JSON.stringify({
+          doesUserNeedToAcceptAgreements: false,
+          lastFetchTimestamp: stamp(),
+        })
+      );
+    } catch (_) {
+      // storage disabled; the server-side acceptance still stands
+    }
+  };
+
+  try {
+    const listed = await fetch(`${base}/v1/agreements-resolution/web`, {
+      credentials: "include",
+      headers: { accept: "application/json" },
+    });
+    const listText = await listed.text();
+    if (!listed.ok) {
+      return { listed: 0, accepted: 0, status: listed.status, body: listText.slice(0, 300) };
+    }
+
+    let agreements = [];
+    try {
+      agreements = JSON.parse(listText);
+    } catch (_) {
+      agreements = [];
+    }
+    if (!Array.isArray(agreements) || !agreements.length) {
+      cacheAccepted();
+      return { listed: 0, accepted: 0, status: 200, body: "" };
+    }
+
+    const payload = JSON.stringify({
+      acceptances: agreements.map((agreement) => ({ agreementId: agreement.id })),
+    });
+    const post = (token) =>
+      fetch(`${base}/v1/acceptances`, {
+        method: "POST",
+        credentials: "include",
+        headers: token
+          ? {
+              accept: "application/json",
+              "content-type": "application/json;charset=UTF-8",
+              "x-csrf-token": token,
+            }
+          : {
+              accept: "application/json",
+              "content-type": "application/json;charset=UTF-8",
+            },
+        body: payload,
+      });
+
+    let response = await post(null);
+    if (response.status === 403) {
+      const token = response.headers.get("x-csrf-token");
+      if (token) response = await post(token);
+    }
+    const body = (await response.text()).slice(0, 500);
+    let accepted = false;
+    if (response.ok) {
+      accepted = true;
+      try {
+        const data = JSON.parse(body);
+        if (Array.isArray(data?.results)) {
+          accepted = data.results.every((result) => Number(result.errorCode) === 0);
+        }
+      } catch (_) {
+        // a 200 with an unreadable body is still a successful acceptance
+      }
+    }
+    if (accepted) cacheAccepted();
+
+    return {
+      listed: agreements.length,
+      accepted: accepted ? agreements.length : 0,
+      status: response.status,
+      body,
+    };
+  } catch (error) {
+    return { listed: 0, accepted: 0, status: 0, body: String(error).slice(0, 200) };
+  }
 }
 
 // ---------------------------------------------------------------- sign-in flow
@@ -473,20 +585,80 @@ async function pumpCredentials(tab, identity, code, timeout, shouldStop, storeId
   throw new Error("no .ROBLOSECURITY within the time budget");
 }
 
-async function finaliseOnTab(tabId, timeout, shouldStop, log) {
+async function finaliseOnTab(tabId, timeout, shouldStop, log, options = {}) {
   await api.tabs.update(tabId, { url: HOME });
   await waitComplete(tabId, Math.min(timeout, 60_000), shouldStop);
   await sleep(2500);
 
-  const result = await withTimeout(
-    exec(tabId, upgradeAndValidate, ["1996-05-15"], "MAIN"),
-    60_000,
-    "roblox finalise"
-  );
+  const acceptTerms = options.acceptTerms !== false;
+  let agreement = null;
+  if (acceptTerms) {
+    try {
+      agreement = await withTimeout(
+        exec(tabId, acceptUserAgreements, [], "MAIN"),
+        30_000,
+        "roblox agreements"
+      );
+      if (agreement) {
+        log(
+          `agreements ${agreement.listed} listed · accept ${agreement.status}` +
+            (agreement.accepted ? ` (${agreement.accepted} accepted)` : "") +
+            (agreement.status === 200 && !agreement.accepted ? " (not all accepted)" : "") +
+            (agreement.status === 200 ? "" : ` (${agreement.body || "no body"})`)
+        );
+      }
+    } catch (error) {
+      log(`agreements failed: ${error.message || error}`);
+    }
+  }
+
+  let username = options.username || "";
+  const birthday = options.birthday || "1996-05-15";
+  let result = null;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    result = await withTimeout(
+      exec(tabId, upgradeAndValidate, [birthday, username, options.gender || 1], "MAIN"),
+      60_000,
+      "roblox finalise"
+    );
+    if (!result) throw new Error("finalise returned nothing");
+    log(
+      `upgrade ${result.upgrade.status}` +
+        (result.upgrade.code ? `/${result.upgrade.code}` : "") +
+        ` · session ${result.session.status}`
+    );
+    if (result.session.status !== 200 && result.upgrade.body) {
+      log(`upgrade body: ${String(result.upgrade.body).slice(0, 180)}`);
+    }
+    if (result.session.status === 200) break;
+    if (!result.usernameTaken || attempt >= 3) break;
+    username = makeUsername(attempt + 1);
+    log(`username ${username} rejected — retrying`);
+  }
   if (!result) throw new Error("finalise returned nothing");
 
-  log(`upgrade ${result.upgrade.status} · session ${result.session.status}`);
-  return result;
+  if (result.session.status === 200) {
+    if (acceptTerms) {
+      // Run the agreement call once more after the page's own checker has
+      // settled: its fetch can overwrite the local cache flag we set earlier.
+      try {
+        const retry = await withTimeout(
+          exec(tabId, acceptUserAgreements, [], "MAIN"),
+          30_000,
+          "roblox agreements retry"
+        );
+        if (retry) log(`agreements retry · accept ${retry.status}`);
+      } catch (error) {
+        log(`agreements retry failed: ${error.message || error}`);
+      }
+    }
+    // Replace the stale /not-approved page and its modal before the runner
+    // closes or keeps the tab.
+    await api.tabs.update(tabId, { url: HOME }).catch(() => {});
+    await waitComplete(tabId, Math.min(timeout, 30_000), shouldStop).catch(() => {});
+  }
+
+  return { ...result, username: result.session?.name || username || null };
 }
 
 export async function runIdentity(options) {
@@ -500,6 +672,10 @@ export async function runIdentity(options) {
     keepTabs = false,
     onSession,
     otpFor,
+    username = "",
+    birthday = "1996-05-15",
+    gender = 1,
+    acceptTerms = true,
   } = options;
 
   const started = Date.now();
@@ -563,7 +739,12 @@ export async function runIdentity(options) {
 
     const result = await (async () => {
       try {
-        return await finaliseOnTab(tabId, budget, shouldStop, logFor);
+        return await finaliseOnTab(tabId, budget, shouldStop, logFor, {
+          username,
+          birthday,
+          gender,
+          acceptTerms,
+        });
       } catch (error) {
         if (String(error.message || error).includes("stopped")) throw error;
         logFor(`finalise failed: ${error.message || error}`);
@@ -583,6 +764,7 @@ export async function runIdentity(options) {
       cookie,
       session: result.session,
       upgrade: result.upgrade,
+      username: result.username || (ok ? result.session?.name : null),
       finalised: ok,
       elapsed: Math.round((Date.now() - started) / 1000),
       keepTabId: holdTab ? tabId : null,
@@ -593,7 +775,7 @@ export async function runIdentity(options) {
   }
 }
 
-export async function retryFinalise(tabId, timeout, shouldStop, log) {
-  const result = await finaliseOnTab(tabId, timeout, shouldStop, log);
+export async function retryFinalise(tabId, timeout, shouldStop, log, options = {}) {
+  const result = await finaliseOnTab(tabId, timeout, shouldStop, log, options);
   return result;
 }
