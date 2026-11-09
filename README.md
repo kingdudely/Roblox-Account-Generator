@@ -68,9 +68,11 @@ The runner opens on install. If it does not, click the toolbar icon and choose
      create the admin account manually. The Phone gate card can decode the admin
      signup QR and read the SMS number/message.
    - **Sub-step checklist.** Every sub-step has a checkbox. Tick the ones you
-     have already done. Automatable sub-steps also have an **Auto** button that
-     runs only that one task; **Automate remaining** runs every unchecked
-     automatable sub-step in order.
+     have already done. Ticking a later sub-step checks everything before it;
+     unticking one clears everything after it. Automatable sub-steps also have
+     an **Auto** button that runs only that one task; **Automate remaining**
+     runs every unchecked automatable sub-step in order. The **Keys** tab has a
+     **Create a key in Setup** button that opens this step.
    - **Automate remaining** opens one new tab at `admin.google.com` in the
      `RAC setup` container (Chrome: the current profile). Sign in there as the
      tenant admin; the extension takes over when it lands in the Admin console.

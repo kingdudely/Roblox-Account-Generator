@@ -2340,7 +2340,7 @@ async function saveDuck(fields) {
     state.duckdns?.token && state.duckdns?.subdomain
   );
   const credentialsEntry = substepEntry("dns.credentials");
-  if (credentialsSaved && !credentialsEntry) {
+  if (credentialsSaved && !credentialsEntry?.done) {
     markSubstepDone("dns.credentials").catch(() => {});
   } else if (!credentialsSaved && credentialsEntry?.done) {
     setSubstep("dns.credentials", {
@@ -2690,6 +2690,41 @@ async function markSubstepDone(id) {
   await setSubstep(id, { done: true, status: "done", error: "" });
 }
 
+function substepDoneInDraft(draft, id) {
+  const entry = draft.setup?.substeps?.[id];
+  if (entry) return Boolean(entry.done);
+  const def = SUBSTEP_BY_ID[id];
+  return Boolean(def && draft.setup?.done?.[def.step]);
+}
+
+// Manual ticks are sequential: checking a sub-step checks everything before it,
+// and unchecking one clears everything after it. Automatic task completion uses
+// markSubstepDone instead, so it only ticks the task that actually finished.
+async function setSubstepCascade(id, checked) {
+  const index = SUBSTEPS.findIndex((entry) => entry.id === id);
+  if (index < 0) return;
+  const affected = checked ? SUBSTEPS.slice(0, index + 1) : SUBSTEPS.slice(index);
+  await mutate((draft) => {
+    draft.setup.substeps = { ...(draft.setup.substeps || {}) };
+    for (const def of affected) {
+      draft.setup.substeps[def.id] = {
+        ...(draft.setup.substeps[def.id] || {}),
+        done: checked,
+        status: checked ? "done" : def.auto ? "auto" : "manual",
+        error: "",
+      };
+    }
+    draft.setup.done = { ...(draft.setup.done || {}) };
+    for (const [step, ids] of Object.entries(STEP_SUBSTEPS)) {
+      draft.setup.done[step] = ids.every((subId) =>
+        substepDoneInDraft(draft, subId)
+      );
+    }
+  });
+  state = await load();
+  renderSetup();
+}
+
 async function syncStepDone(step) {
   const ids = STEP_SUBSTEPS[step] || [];
   if (!ids.length) {
@@ -2703,26 +2738,6 @@ async function syncStepDone(step) {
     });
     state = await load();
   }
-  renderSetup();
-}
-
-async function setAllSubsteps(step, done) {
-  const ids = STEP_SUBSTEPS[step] || [];
-  if (!ids.length) return;
-  await mutate((draft) => {
-    draft.setup.substeps = { ...(draft.setup.substeps || {}) };
-    for (const id of ids) {
-      const def = SUBSTEP_BY_ID[id];
-      draft.setup.substeps[id] = {
-        ...(draft.setup.substeps[id] || {}),
-        done,
-        status: done ? "done" : def?.auto ? "auto" : "manual",
-        error: "",
-      };
-    }
-    draft.setup.done = { ...(draft.setup.done || {}), [step]: done };
-  });
-  state = await load();
   renderSetup();
 }
 
@@ -4149,17 +4164,26 @@ function wireSetup() {
     const sub = event.target.closest("[data-substep-done]");
     if (sub) {
       const id = sub.dataset.substepDone;
-      const def = SUBSTEP_BY_ID[id];
-      if (sub.checked) {
-        // Ticking a queued task is how the user skips it without stopping the
-        // rest of the run.
-        autoSetup.queue = autoSetup.queue.filter((entry) => entry !== id);
+      if (autoSetup.running) {
+        if (!sub.checked) {
+          stopAutoSetup("checklist changed — run stopped");
+        } else {
+          autoSetup.queue = autoSetup.queue.filter((entry) => entry !== id);
+        }
       }
-      setSubstep(id, {
-        done: sub.checked,
-        status: sub.checked ? "done" : def?.auto ? "auto" : "manual",
-        error: "",
-      }).catch(() => {});
+      setSubstepCascade(id, sub.checked)
+        .then(() => {
+          if (!autoSetup.running) return;
+          autoSetup.queue = autoSetup.queue.filter((entry) => !isSubstepDone(entry));
+          if (autoSetup.current && isSubstepDone(autoSetup.current)) {
+            stopAutoSetup("current sub-step was checked — run stopped");
+          } else {
+            renderAutoSetup();
+          }
+        })
+        .catch((error) =>
+          remember(`checklist: ${error.message || error}`, "error")
+        );
       return;
     }
 
@@ -4167,7 +4191,24 @@ function wireSetup() {
     if (!box) return;
     const id = box.dataset.stepDone;
     if (STEP_SUBSTEPS[id]) {
-      setAllSubsteps(id, box.checked).catch(() => {});
+      const ids = STEP_SUBSTEPS[id];
+      const target = box.checked ? ids[ids.length - 1] : ids[0];
+      if (autoSetup.running && !box.checked) {
+        stopAutoSetup("checklist changed — run stopped");
+      }
+      setSubstepCascade(target, box.checked)
+        .then(() => {
+          if (!autoSetup.running) return;
+          autoSetup.queue = autoSetup.queue.filter((entry) => !isSubstepDone(entry));
+          if (autoSetup.current && isSubstepDone(autoSetup.current)) {
+            stopAutoSetup("current sub-step was checked — run stopped");
+          } else {
+            renderAutoSetup();
+          }
+        })
+        .catch((error) =>
+          remember(`checklist: ${error.message || error}`, "error")
+        );
       return;
     }
     setSetup((draft) => {
@@ -4245,6 +4286,15 @@ function wire() {
         panel.classList.toggle("active", panel.id === `panel-${tab.dataset.tab}`);
       });
     });
+  });
+
+  $("keys-to-setup")?.addEventListener("click", () => {
+    switchTab("setup");
+    setSetup((draft) => {
+      draft.hideDone = false;
+    })
+      .then(() => openStep("key", true))
+      .catch(() => {});
   });
 
   wireSetup();
