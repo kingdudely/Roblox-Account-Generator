@@ -173,6 +173,10 @@ export async function driveSignupTick(tabId, profile, log) {
   } catch (error) {
     // A navigation between pages destroys the execution context. That is a
     // normal part of the flow, not a reason to abandon trusted input.
-    return { wait: true, transient: String(error.message || error) };
+    const text = String(error.message || error);
+    if (/not attached|debugger is not attached|detached|target closed/i.test(text)) {
+      return { fatal: text };
+    }
+    return { wait: true, transient: text };
   }
 }

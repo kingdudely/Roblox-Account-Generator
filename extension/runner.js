@@ -3069,6 +3069,15 @@ async function autoSetupLoop() {
             stopAutoSetup("Google refused the signup");
             return;
           }
+          if (result?.fatal) {
+            autoSetup.cdp = false;
+            await detachCdp(autoSetup.tabId);
+            autoLog(
+              `debugger stopped (${String(result.fatal).slice(0, 100)}) — using DOM input`,
+              "warn"
+            );
+            cdpMode = false;
+          }
           if (result?.transient) {
             autoLog(`cdp: page changed — waiting (${result.transient.slice(0, 90)})`, "info");
           }
