@@ -1823,3 +1823,137 @@ textarea::placeholder {
   color: #6d5a56;
   opacity: 1;
 }
+
+/* ---------------------------------------------------------- setup method picker */
+
+.setup-mode-card .setup-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.setup-mode-card .setup-mode {
+  min-width: 120px;
+}
+
+#panel-setup .setup-auto {
+  display: none;
+}
+
+#panel-setup[data-mode="auto"] .setup-auto {
+  display: block;
+}
+
+#panel-setup[data-mode="buy"] .setup-progress,
+#panel-setup[data-mode="buy"] .step,
+#panel-setup[data-mode="auto"] .setup-progress,
+#panel-setup[data-mode="auto"] .step {
+  display: none;
+}
+
+#panel-setup:not([data-mode="buy"]) .setup-banner {
+  display: none;
+}
+
+.auto-phone {
+  margin-top: 14px;
+  border: 1px solid #120c10;
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, #2b2028, #241a21);
+  padding: 12px;
+}
+
+.auto-phone[hidden],
+.auto-json[hidden] {
+  display: none;
+}
+
+.auto-phone-grid {
+  display: grid;
+  grid-template-columns: minmax(140px, 210px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.auto-qr-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.auto-qr-wrap img {
+  width: 100%;
+  max-width: 210px;
+  aspect-ratio: 1;
+  object-fit: contain;
+  border-radius: 8px;
+  background: #fff;
+  padding: 8px;
+  image-rendering: pixelated;
+}
+
+.auto-phone-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.auto-phone-copy .gate-row {
+  margin: 0;
+}
+
+.auto-json {
+  margin-top: 14px;
+  border-top: 1px solid #3a2c35;
+  padding-top: 12px;
+}
+
+.auto-json textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 76px;
+  resize: vertical;
+}
+
+.auto-log {
+  margin-top: 14px;
+  max-height: 230px;
+  overflow: auto;
+  border: 1px solid #120c10;
+  border-radius: 6px;
+  background: #1b1319;
+  padding: 8px 10px;
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  color: #d9cbd4;
+}
+
+.auto-log:empty {
+  display: none;
+}
+
+.auto-log .auto-line {
+  display: block;
+}
+
+.auto-log .auto-line.ok {
+  color: #9fd88a;
+}
+
+.auto-log .auto-line.warn {
+  color: #e8c07a;
+}
+
+.auto-log .auto-line.error {
+  color: #ef8a8a;
+}
+
+@media (max-width: 760px) {
+  .auto-phone-grid {
+    grid-template-columns: 1fr;
+  }
+}

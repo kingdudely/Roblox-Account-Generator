@@ -71,10 +71,20 @@ export function parseClient(text) {
   return { client_id: source.client_id, client_secret: source.client_secret };
 }
 
-export async function waitForCode(clientId, verifier, timeout = 600_000) {
+export async function waitForCode(clientId, verifier, options = {}) {
+  const {
+    timeout = 600_000,
+    storeId = null,
+    autoConsent = false,
+    email = "",
+    password = "",
+    otp = "",
+  } = options;
   const url = authoriseUrl(clientId, await challengeFor(verifier));
 
-  const tab = await api.tabs.create({ url, active: true });
+  const createOptions = { url, active: true };
+  if (storeId) createOptions.cookieStoreId = storeId;
+  const tab = await api.tabs.create(createOptions);
   const deadline = Date.now() + timeout;
   let code = null;
 
@@ -94,7 +104,28 @@ export async function waitForCode(clientId, verifier, timeout = 600_000) {
         code = new URL(current.url).searchParams.get("code");
         break;
       }
-      await sleep(600);
+      if (autoConsent) {
+        const href = current.url || "";
+        // A sign-in challenge in the middle of the consent flow is google.js's
+        // job: hand it the admin credentials and the captured TOTP secret.
+        if (email && /challenge|accountchooser|identifier/i.test(href)) {
+          try {
+            await api.tabs.sendMessage(tab.id, {
+              type: "google-fill",
+              email,
+              password,
+              code: "",
+              codes: [],
+              otp,
+            });
+          } catch (_) {
+            // content script not ready
+          }
+        } else {
+          await clickConsentPage(tab.id, email).catch(() => null);
+        }
+      }
+      await sleep(autoConsent ? 1100 : 600);
     }
   } finally {
     api.webNavigation.onBeforeNavigate.removeListener(onNavigate);
@@ -107,6 +138,94 @@ export async function waitForCode(clientId, verifier, timeout = 600_000) {
 
   if (!code) throw new Error("no authorization code captured");
   return code;
+}
+
+// Runs in the consent tab. One step per call: Continue -> account row ->
+// Advanced -> Allow. It never presses Cancel/Deny.
+function pressConsentInPage(email) {
+  const visible = (el) => {
+    const rect = el.getBoundingClientRect();
+    return rect.width > 1 && rect.height > 1;
+  };
+  const labelOf = (el) =>
+    `${el.getAttribute("aria-label") || ""} ${el.innerText || ""}`
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+  const nodes = [
+    ...document.querySelectorAll('button,[role="button"],a,[role="link"],li'),
+  ].filter(visible);
+
+  if (email) {
+    const row = nodes.find((el) => labelOf(el).includes(String(email).toLowerCase()));
+    if (row) {
+      try {
+        row.click();
+        return `account ${email}`;
+      } catch (_) {
+        // next
+      }
+    }
+  }
+
+  const advanced = nodes.find((el) => labelOf(el) === "advanced");
+  if (advanced) {
+    try {
+      advanced.click();
+      return "advanced";
+    } catch (_) {
+      // next
+    }
+  }
+
+  const unsafe = nodes.find((el) =>
+    /go to .*\(unsafe\)|continue to .*\(unsafe\)/i.test(labelOf(el))
+  );
+  if (unsafe) {
+    try {
+      unsafe.click();
+      return "unsafe";
+    } catch (_) {
+      // next
+    }
+  }
+
+  const wanted = [
+    "continue",
+    "allow",
+    "i understand",
+    "got it",
+    "accept",
+    "next",
+    "confirm",
+  ];
+  for (const node of nodes) {
+    const label = labelOf(node);
+    if (!label) continue;
+    if (!wanted.some((word) => label === word || label.startsWith(`${word} `))) continue;
+    try {
+      node.click();
+      return label.slice(0, 40);
+    } catch (_) {
+      // next
+    }
+  }
+  return null;
+}
+
+async function clickConsentPage(tabId, email) {
+  try {
+    const results = await api.scripting.executeScript({
+      target: { tabId },
+      func: pressConsentInPage,
+      args: [email || ""],
+    });
+    const hit = results?.[0]?.result;
+    if (hit) return hit;
+  } catch (_) {
+    // scripting may not be allowed on that URL yet
+  }
+  return null;
 }
 
 export async function exchangeCode(client, code, verifier) {

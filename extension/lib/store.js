@@ -55,7 +55,25 @@ export function emptyState() {
     // Setup wizard state. "done" is a manual tick — the extension cannot verify
     // that you created a tenant or accepted an agreement — and "open" remembers
     // which step blocks you left expanded.
-    setup: { done: {}, open: {}, hideDone: false },
+    setup: {
+      done: {},
+      open: {},
+      hideDone: false,
+      mode: "manual",
+      auto: {
+        recoveryEmail: "",
+        businessName: "",
+        firstName: "",
+        lastName: "",
+        adminUser: "admin",
+        adminPassword: "",
+        projectName: "",
+        subdomain: "",
+        token: "",
+        phase: "",
+        status: "",
+      },
+    },
   };
 }
 
@@ -81,6 +99,7 @@ function normalise(state) {
       ...(state.setup || {}),
       done: { ...(state.setup?.done || {}) },
       open: { ...(state.setup?.open || {}) },
+      auto: { ...base.setup.auto, ...(state.setup?.auto || {}) },
     },
   };
 }

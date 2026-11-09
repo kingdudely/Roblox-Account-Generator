@@ -81,6 +81,28 @@ export function makePassword(length) {
   return chars.join("");
 }
 
+// A Google admin password made only from characters every signup form accepts.
+// The random symbol pool above includes characters some Google forms reject.
+export function makeAdminPassword() {
+  const word = () => pick(ADJECTIVES).toLowerCase();
+  return `${pick(UPPER)}${word()}-${word()}-${randomInt(10, 99)}${pick(DIGIT)}`;
+}
+
+export function makePerson() {
+  return { first: pick(FIRST_NAMES), last: pick(LAST_NAMES) };
+}
+
+export function makeBusinessName() {
+  return `${pick(ADJECTIVES)} ${pick(NOUNS)} ${pick([
+    "Supply",
+    "Works",
+    "Labs",
+    "Trading",
+    "Services",
+    "Group",
+  ])}`;
+}
+
 export function makeIdentityFields(domain, index) {
   const first = pick(FIRST_NAMES);
   const last = pick(LAST_NAMES);

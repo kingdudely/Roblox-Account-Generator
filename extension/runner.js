@@ -21,7 +21,7 @@ import {
   probeSendButton,
   pressSendSms,
 } from "./lib/phone.js";
-import { makeIdentityFields, makeUsername } from "./lib/names.js";
+import { makeIdentityFields, makeUsername, makePerson, makeBusinessName, makeAdminPassword } from "./lib/names.js";
 import {
   writeTxt,
   clearTxt,
@@ -106,6 +106,7 @@ function render() {
   renderDuckdns();
   renderTotp();
   renderSettings();
+  renderSetup();
 }
 
 function renderStatus() {
@@ -672,7 +673,7 @@ async function addKeys(text, source = "pasted") {
 
 // A stored client (client_secret_*.json) has no refresh token yet. One consent
 // run writes it back into the same entry, so the tenant row never duplicates.
-async function authorizeKey(id) {
+async function authorizeKey(id, options = {}) {
   const key = state.keys.find((entry) => entry.id === id);
   if (!key) return;
   if (key.kind === "service_account") {
@@ -692,7 +693,14 @@ async function authorizeKey(id) {
     );
     await remember(`${key.label}: approve the consent tab as the tenant admin`, "step");
     const verifier = makeVerifier();
-    const code = await waitForCode(client.client_id, verifier);
+    const code = await waitForCode(client.client_id, verifier, {
+      storeId: options.storeId || null,
+      autoConsent: Boolean(options.autoConsent),
+      email: options.email || "",
+      password: options.password || "",
+      otp: options.otp || "",
+      timeout: options.timeout || 600_000,
+    });
     const credential = await exchangeCode(client, code, verifier);
 
     await mutate((draft) => {
@@ -2372,6 +2380,7 @@ function setupState() {
     done: setup.done || {},
     open: setup.open || {},
     hideDone: Boolean(setup.hideDone),
+    mode: setup.mode === "buy" || setup.mode === "auto" ? setup.mode : "manual",
   };
 }
 
@@ -2405,6 +2414,21 @@ function renderSetup() {
   if (!steps.length) return;
 
   const setup = setupState();
+  const panel = $("panel-setup");
+  if (panel) panel.dataset.mode = setup.mode;
+
+  for (const button of document.querySelectorAll("[data-setup-mode]")) {
+    const active = button.dataset.setupMode === setup.mode;
+    button.classList.toggle("primary", active);
+    button.setAttribute("aria-selected", String(active));
+  }
+  const modeNotes = {
+    buy: "Buy a ready key; no tenant, no phone gate, no OAuth client to build. Paste it in Keys.",
+    manual: "Follow the five steps at your own pace. Re-check reads the tenant and marks the evidence.",
+    auto: "The extension drives the Cloud Identity signup, the domain TXT record, and the console. It stops for the phone gate (and a captcha) and shows the QR and number here.",
+  };
+  setText("setup-mode-note", modeNotes[setup.mode] || modeNotes.manual);
+
   const firstOpen = SETUP_TICKABLE.find((id) => !setup.done[id]);
   let complete = 0;
 
@@ -2464,11 +2488,719 @@ function renderSetup() {
         : "not saved yet — step 2 needs these"
     );
   }
+  renderAutoSetup();
+}
+
+// ------------------------------------------------------------- automatic setup
+
+const AUTO_SIGNUP =
+  "https://workspace.google.com/gcpidentity/signup?sku=identitybasic";
+const AUTO_BILLING = "https://admin.google.com/ac/billing/catalog";
+const AUTO_ADMIN_2SV =
+  "https://myaccount.google.com/signinoptions/two-step-verification";
+const AUTO_2SV = "https://admin.google.com/ac/security/2sv";
+const AUTO_PROJECT = "https://console.cloud.google.com/projectcreate";
+
+const autoSetup = {
+  running: false,
+  stop: false,
+  tabId: null,
+  storeId: null,
+  profile: null,
+  phase: "",
+  status: "idle",
+  lastUrl: "",
+  log: [],
+  phoneShown: false,
+  jsonShown: false,
+  projectId: "",
+};
+
+let autoDraft = null;
+
+function autoValues() {
+  if (autoDraft) return autoDraft;
+  const saved = state.setup?.auto || {};
+  const duck = state.duckdns || {};
+  const person = makePerson();
+  const subdomain = saved.subdomain || duck.subdomain || "";
+  autoDraft = {
+    recoveryEmail: saved.recoveryEmail || "",
+    businessName: saved.businessName || makeBusinessName(),
+    firstName: saved.firstName || person.first,
+    lastName: saved.lastName || person.last,
+    adminUser: saved.adminUser || "admin",
+    adminPassword: saved.adminPassword || makeAdminPassword(),
+    projectName:
+      saved.projectName || (subdomain ? `${subdomain}-rac` : ""),
+    subdomain,
+    token: saved.token || duck.token || "",
+  };
+  return autoDraft;
+}
+
+function autoStatus(text) {
+  autoSetup.status = text;
+  setText("auto-status", text);
+}
+
+function autoProfile() {
+  if (autoSetup.profile) return autoSetup.profile;
+  const values = autoValues();
+  const subdomain = values.subdomain || state.duckdns?.subdomain || "";
+  const domain = subdomain ? fullDomain(subdomain) : "";
+  return {
+    ...values,
+    subdomain,
+    domain,
+    adminEmail: `${values.adminUser || "admin"}@${domain}`,
+    region: "United States",
+  };
+}
+
+function autoLog(text, level = "info") {
+  const line = { t: Date.now(), text: String(text), level };
+  autoSetup.log = [...autoSetup.log, line].slice(-300);
+  renderAutoLog();
+  remember(`[auto] ${text}`, level).catch(() => {});
+}
+
+function renderAutoLog() {
+  const box = $("auto-log");
+  if (!box) return;
+  box.replaceChildren(
+    ...autoSetup.log.map((line) => {
+      const span = document.createElement("span");
+      span.className = `auto-line ${line.level}`;
+      span.textContent = `${new Date(line.t).toLocaleTimeString()}  ${line.text}`;
+      return span;
+    })
+  );
+  box.scrollTop = box.scrollHeight;
+}
+
+function renderAutoSetup() {
+  const values = autoValues();
+  const set = (id, value) => {
+    const el = $(id);
+    if (el && document.activeElement !== el) el.value = value || "";
+  };
+  set("auto-recovery", values.recoveryEmail);
+  set("auto-business", values.businessName);
+  set("auto-admin", values.adminUser);
+  set("auto-password", values.adminPassword);
+  set("auto-token", values.token);
+  set("auto-sub", values.subdomain);
+  setText("auto-status", autoSetup.status || "idle");
+
+  const start = $("auto-start");
+  if (start) start.disabled = autoSetup.running;
+  const stop = $("auto-stop");
+  if (stop) stop.disabled = !autoSetup.running;
+  const open = $("auto-open");
+  if (open) open.disabled = !autoSetup.tabId;
+  const phone = $("auto-phone");
+  if (phone) phone.hidden = !autoSetup.phoneShown;
+  const json = $("auto-json-box");
+  if (json) json.hidden = !autoSetup.jsonShown;
+  renderAutoLog();
+}
+
+function readAutoFields() {
+  const values = { ...autoValues() };
+  const pairs = [
+    ["auto-recovery", "recoveryEmail"],
+    ["auto-business", "businessName"],
+    ["auto-admin", "adminUser"],
+    ["auto-password", "adminPassword"],
+    ["auto-token", "token"],
+    ["auto-sub", "subdomain"],
+  ];
+  for (const [id, key] of pairs) {
+    const el = $(id);
+    if (el) values[key] = el.value.trim();
+  }
+  autoDraft = values;
+  return values;
+}
+
+async function persistAutoValues(values) {
+  await mutate((draft) => {
+    draft.setup.mode = "auto";
+    draft.setup.auto = {
+      ...(draft.setup.auto || {}),
+      recoveryEmail: values.recoveryEmail || "",
+      businessName: values.businessName || "",
+      firstName: values.firstName || "",
+      lastName: values.lastName || "",
+      adminUser: values.adminUser || "admin",
+      adminPassword: values.adminPassword || "",
+      projectName: values.projectName || "",
+      subdomain: values.subdomain || "",
+      token: values.token || "",
+      phase: values.phase || draft.setup.auto?.phase || "",
+    };
+    if (values.token) draft.duckdns.token = values.token;
+    if (values.subdomain) draft.duckdns.subdomain = values.subdomain;
+  });
+  state = await load();
+}
+
+async function ensureSetupContainer() {
+  if (!isFirefox) return null;
+  try {
+    const name = "RAC setup";
+    const existing = await api.contextualIdentities.query({ name });
+    if (existing.length) return existing[0].cookieStoreId;
+    const created = await api.contextualIdentities.create({
+      name,
+      color: "blue",
+      icon: "circle",
+    });
+    return created.cookieStoreId;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function focusAutoTab(tab) {
+  const current = tab || (await api.tabs.get(autoSetup.tabId).catch(() => null));
+  if (!current) return;
+  try {
+    await api.tabs.update(current.id, { active: true });
+  } catch (_) {
+    // tab gone
+  }
+  try {
+    if (current.windowId) await api.windows.update(current.windowId, { focused: true });
+  } catch (_) {
+    // window gone
+  }
+}
+
+async function focusRunnerTab() {
+  try {
+    const current = await api.tabs.getCurrent?.();
+    if (!current) return;
+    await api.tabs.update(current.id, { active: true });
+    if (current.windowId) await api.windows.update(current.windowId, { focused: true });
+  } catch (_) {
+    // runner tab gone
+  }
+}
+
+async function startAutoSetup() {
+  if (autoSetup.running) {
+    await remember("automatic setup is already running", "warn");
+    return;
+  }
+
+  const values = readAutoFields();
+  const token = values.token || state.duckdns?.token || "";
+  const subdomain = String(values.subdomain || state.duckdns?.subdomain || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "");
+  const domain = fullDomain(subdomain);
+
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(values.recoveryEmail)) {
+    await remember("automatic setup needs a real recovery email address", "error");
+    return;
+  }
+  if (!token) {
+    await remember("automatic setup needs a DuckDNS account token", "error");
+    return;
+  }
+  if (!/^[a-z0-9-]{1,63}$/.test(subdomain)) {
+    await remember("automatic setup needs a DuckDNS subdomain", "error");
+    return;
+  }
+  if (!values.adminPassword || values.adminPassword.length < 8) {
+    await remember("automatic setup needs an admin password of at least 8 characters", "error");
+    return;
+  }
+  if (!/^[a-z0-9._-]{1,64}$/i.test(values.adminUser || "")) {
+    await remember("automatic setup needs a valid admin username", "error");
+    return;
+  }
+
+  const profile = {
+    ...values,
+    businessName: values.businessName || makeBusinessName(),
+    firstName: values.firstName || "Alex",
+    lastName: values.lastName || "Morgan",
+    adminUser: values.adminUser || "admin",
+    token,
+    subdomain,
+    domain,
+    projectName: values.projectName || `${subdomain}-rac`,
+    adminEmail: `${values.adminUser || "admin"}@${domain}`,
+    region: "United States",
+  };
+
+  autoSetup.running = true;
+  autoSetup.stop = false;
+  autoSetup.profile = profile;
+  autoSetup.phase = "signup";
+  autoSetup.tabId = null;
+  autoSetup.log = [];
+  autoSetup.phoneShown = false;
+  autoSetup.jsonShown = false;
+  autoSetup.lastUrl = "";
+  autoSetup.storeId = await ensureSetupContainer();
+  await persistAutoValues({ ...profile, phase: "signup" });
+  await refresh();
+  switchTab("setup");
+  autoStatus("opening Google signup");
+  autoLog("automatic setup started");
+  renderAutoSetup();
+
+  try {
+    const options = { url: AUTO_SIGNUP, active: true };
+    if (autoSetup.storeId) options.cookieStoreId = autoSetup.storeId;
+    const tab = await api.tabs.create(options);
+    autoSetup.tabId = tab.id;
+    renderAutoSetup();
+    autoSetupLoop().catch((error) =>
+      autoLog(`setup loop stopped: ${error.message || error}`, "error")
+    );
+  } catch (error) {
+    autoSetup.running = false;
+    autoStatus("could not open the setup tab");
+    autoLog(`could not open the setup tab: ${error.message || error}`, "error");
+  }
+}
+
+function stopAutoSetup(reason = "stopped") {
+  autoSetup.running = false;
+  autoSetup.stop = true;
+  if (autoSetup.tabId) {
+    api.tabs
+      .sendMessage(autoSetup.tabId, { type: "setup-stop" })
+      .catch(() => {});
+  }
+  autoStatus(reason);
+  autoLog(`automatic setup ${reason}; the setup tab is left open`, "warn");
+  renderAutoSetup();
+}
+
+async function autoSetupLoop() {
+  while (autoSetup.running && !autoSetup.stop) {
+    const tab = await api.tabs.get(autoSetup.tabId).catch(() => null);
+    if (!tab) {
+      autoLog("setup tab closed", "warn");
+      stopAutoSetup("tab closed");
+      return;
+    }
+
+    const url = tab.url || "";
+    if (url !== autoSetup.lastUrl) {
+      autoSetup.lastUrl = url;
+      autoLog(`at ${url.slice(0, 150)}`);
+      if (/challenge\/iap\/qrcode/i.test(url)) {
+        autoStatus("phone gate — scan the QR");
+        autoSetup.phoneShown = true;
+        renderAutoSetup();
+        focusRunnerTab().catch(() => {});
+        scanAutoPhone().catch(() => {});
+      } else if (/accounts\.google\.com/.test(url)) {
+        autoStatus("Google sign-in");
+      } else if (/gcpidentity\/signup/.test(url)) autoStatus("filling the signup");
+      else if (/\/verify\//.test(url)) autoStatus("verifying the domain");
+      else if (/admin\.google\.com/.test(url)) autoStatus("admin console");
+      else if (/console\.cloud\.google\.com/.test(url)) autoStatus("cloud console");
+      if (autoSetup.phoneShown) {
+        if (/accounts\.google\.com/.test(url)) {
+          if (!/challenge\/iap\/qrcode/i.test(url)) scanAutoPhone().catch(() => {});
+        } else {
+          autoSetup.phoneShown = false;
+          renderAutoSetup();
+        }
+      }
+    }
+
+    try {
+      await api.tabs.sendMessage(autoSetup.tabId, {
+        type: "setup-fill",
+        profile: autoSetup.profile,
+        phase: autoSetup.phase,
+      });
+    } catch (_) {
+      // The content script is declared at document_idle; the next tick lands.
+    }
+
+    // myaccount.google.com has the existing 2SV wizard, which content/google.js
+    // already drives. Hand it the admin credentials there instead of duplicating
+    // that state machine in content/setup.js.
+    if (/^https:\/\/myaccount\.google\.com\//.test(url)) {
+      try {
+        await api.tabs.sendMessage(autoSetup.tabId, {
+          type: "google-fill",
+          email: autoSetup.profile.adminEmail,
+          password: autoSetup.profile.adminPassword,
+          code: "",
+          codes: [],
+          otp: "",
+        });
+      } catch (_) {
+        // google.js not ready yet
+      }
+    }
+
+    await sleep(1500);
+  }
+}
+
+function paintAutoPhone(record, qr) {
+  const img = $("auto-qr");
+  if (img) {
+    if (qr) {
+      img.src = qr;
+      img.hidden = false;
+    } else {
+      img.removeAttribute("src");
+      img.hidden = true;
+    }
+  }
+  setText(
+    "auto-qr-hint",
+    qr
+      ? "Scan this with your phone camera. For SMS, press Try another way and the number/message appear here."
+      : "The QR is in the setup tab — open it and scan from there."
+  );
+
+  const number = record.number || "";
+  const body = record.body || "";
+  setText("auto-phone-number", number || "—");
+  setText("auto-phone-body", body || "—");
+  setText(
+    "auto-phone-source",
+    record.page
+      ? `${record.source || "page"} · ${String(record.page).slice(0, 80)}`
+      : "waiting for Google"
+  );
+
+  const link = $("auto-phone-link");
+  if (link) {
+    if (record.payload && /^https?:\/\//i.test(record.payload)) {
+      link.href = record.payload;
+      link.hidden = false;
+    } else {
+      link.hidden = true;
+    }
+  }
+  const sms = $("auto-phone-sms");
+  if (sms) {
+    if (number) {
+      sms.href = `sms:${number}${body ? `?body=${encodeURIComponent(body)}` : ""}`;
+      sms.hidden = false;
+    } else {
+      sms.hidden = true;
+    }
+  }
+}
+
+async function scanAutoPhone() {
+  if (!autoSetup.tabId) return;
+  try {
+    const page = await scanTab(autoSetup.tabId);
+    const record = await extractFromPage(page);
+    const images = [
+      ...(page.canvases || []),
+      ...(page.images || []),
+      ...(page.svgs || []),
+    ].filter(Boolean);
+    let qr = "";
+    for (const candidate of images) {
+      try {
+        const decoded = await decodeImageUrl(candidate);
+        if (decoded) {
+          qr = candidate;
+          break;
+        }
+      } catch (_) {
+        // not a QR; try the next image
+      }
+    }
+    if (!qr && images.length) qr = images[0];
+    paintAutoPhone(record, qr);
+
+    if (record.number || record.body) {
+      autoLog(`phone gate: ${record.number || "?"} · ${record.body || "?"}`, "ok");
+      await savePhone(record);
+    } else if (record.payload) {
+      autoLog(`QR decodes to ${String(record.payload).slice(0, 140)}`);
+    } else if (looksLikeConsent(page)) {
+      autoLog("SMS consent page — pressing Send SMS");
+      await autoPressSendSms(autoSetup.tabId, { closeOnSuccess: false });
+      const phone = state.phone || {};
+      if (phone.number || phone.body) {
+        paintAutoPhone(
+          {
+            number: phone.number,
+            body: phone.body,
+            payload: phone.payload,
+            source: "consent",
+            page: page.url,
+          },
+          qr
+        );
+      }
+    } else {
+      autoLog("QR captured; no number/message in the image", "info");
+    }
+  } catch (error) {
+    autoLog(`phone scan failed: ${error.message || error}`, "warn");
+  }
+  renderAutoSetup();
+}
+
+async function handleAutoPhone() {
+  autoSetup.phoneShown = true;
+  autoStatus("phone gate — complete it on your phone");
+  autoLog("phone gate reached; showing the QR / number");
+  renderAutoSetup();
+  await focusRunnerTab();
+  await scanAutoPhone();
+}
+
+async function handleAutoCaptcha() {
+  autoStatus("captcha — solve it in the setup tab");
+  autoLog("Google wants a captcha; the run resumes after you solve it", "warn");
+  const tab = await api.tabs.get(autoSetup.tabId).catch(() => null);
+  if (tab) await focusAutoTab(tab);
+}
+
+async function handleAutoDomain(message) {
+  const token = String(message.token || "");
+  const profile = autoProfile();
+  if (!token || !profile.subdomain) return;
+  autoStatus("writing the DuckDNS TXT record");
+  autoLog(`writing the domain TXT record to ${profile.subdomain}.duckdns.org`);
+  try {
+    await writeTxt(profile.token, profile.subdomain, token);
+    const domain = fullDomain(profile.subdomain);
+    const found = await waitForTxt(domain, token, 90_000, (answers, rounds) => {
+      if (rounds % 4 === 0) autoLog(`waiting for DNS propagation (${rounds})`);
+    });
+    if (!found.found) {
+      autoStatus("DNS record not visible");
+      autoLog("the TXT record did not appear in 90s — check DuckDNS and press Scan tab again", "error");
+      return;
+    }
+    autoStatus("verifying the domain");
+    autoLog("TXT record is visible; telling Google to verify");
+    await api.tabs.sendMessage(autoSetup.tabId, { type: "setup-domain-ready" });
+  } catch (error) {
+    autoStatus("domain verification failed");
+    autoLog(`domain verification failed: ${error.message || error}`, "error");
+  }
+}
+
+async function continueToKey() {
+  if (!autoSetup.tabId) return;
+  autoSetup.phase = "key";
+  autoSetup.jsonShown = true;
+  autoStatus("creating the Cloud project");
+  autoLog("opening Google Cloud project creation");
+  renderAutoSetup();
+  await api.tabs.update(autoSetup.tabId, { url: AUTO_PROJECT }).catch(() => {});
+}
+
+async function handleAutoDomainVerified() {
+  autoLog("domain verified; opening Cloud Identity Free");
+  await setSetup((draft) => {
+    draft.done.tenant = true;
+  });
+  autoStatus("activating Cloud Identity Free");
+  await api.tabs.update(autoSetup.tabId, { url: AUTO_BILLING }).catch(() => {});
+}
+
+async function handleAutoBillingDone() {
+  autoLog("Cloud Identity Free is active");
+  autoStatus("enrolling the admin authenticator");
+  await api.tabs.update(autoSetup.tabId, { url: AUTO_ADMIN_2SV }).catch(() => {});
+  autoLog(
+    "the admin's 2SV wizard is open; if it does not advance, finish it in the setup tab and press Continue to key",
+    "warn"
+  );
+}
+
+async function handleAutoPolicyDone() {
+  autoLog("2SV policy looks set");
+  await setSetup((draft) => {
+    draft.done.twostep = true;
+  });
+  await continueToKey();
+}
+
+async function addAutoKey(clientId, clientSecret) {
+  const profile = autoProfile();
+  const existing = state.keys.find((entry) => entry.client_id === clientId);
+  if (existing) return existing;
+
+  const id = uid("key");
+  await mutate((draft) => {
+    if (draft.keys.some((entry) => entry.client_id === clientId)) return;
+    draft.keys.push({
+      id,
+      kind: "oauth_client",
+      label: profile.domain || "auto setup",
+      domain: profile.domain || "",
+      client_id: clientId,
+      client_secret: clientSecret,
+      refresh_token: null,
+      needs_consent: true,
+      status: "client",
+      scopes: [],
+      fingerprint: `oauth:${clientId}`,
+      created_at: new Date().toISOString(),
+    });
+  });
+  await refresh();
+  return state.keys.find((entry) => entry.client_id === clientId) || null;
+}
+
+async function handleAutoClient(message) {
+  const clientId = String(message.client_id || "").trim();
+  const clientSecret = String(message.client_secret || "").trim();
+  if (!clientId || !clientSecret) return;
+
+  const profile = autoProfile();
+  if (!autoSetup.storeId) autoSetup.storeId = await ensureSetupContainer();
+  autoStatus("authorizing the OAuth client");
+  autoLog(`OAuth client ${clientId} found; adding it to Keys`);
+  const key = await addAutoKey(clientId, clientSecret);
+  if (!key) {
+    autoLog("the OAuth client was already in Keys", "warn");
+    autoStatus("key already loaded");
+    return;
+  }
+
+  await authorizeKey(key.id, {
+    storeId: autoSetup.storeId,
+    autoConsent: true,
+    email: profile.adminEmail,
+    password: profile.adminPassword,
+    otp:
+      liveOtp.get(String(profile.adminEmail || "").toLowerCase()) ||
+      state.totp?.secret ||
+      "",
+    timeout: 180_000,
+  });
+
+  await setSetup((draft) => {
+    draft.done.key = true;
+  });
+  autoLog("key authorized — automatic setup is done", "ok");
+  autoStatus("done — key ready");
+  autoSetup.running = false;
+  if (autoSetup.tabId) {
+    api.tabs
+      .sendMessage(autoSetup.tabId, { type: "setup-stop" })
+      .catch(() => {});
+  }
+  renderAutoSetup();
+}
+
+async function loadAutoJson(text) {
+  try {
+    const client = parseClient(text);
+    await handleAutoClient({
+      client_id: client.client_id,
+      client_secret: client.client_secret,
+    });
+  } catch (error) {
+    await remember(`automatic setup: ${error.message || error}`, "error");
+  }
+}
+
+function wireAutoSetup() {
+  const pairs = [
+    ["auto-recovery", "recoveryEmail"],
+    ["auto-business", "businessName"],
+    ["auto-admin", "adminUser"],
+    ["auto-password", "adminPassword"],
+    ["auto-token", "token"],
+    ["auto-sub", "subdomain"],
+  ];
+  for (const [id, key] of pairs) {
+    const el = $(id);
+    if (!el) continue;
+    el.addEventListener("input", () => {
+      autoValues()[key] = el.value.trim();
+    });
+    el.addEventListener("change", () => {
+      persistAutoValues(readAutoFields()).catch(() => {});
+    });
+  }
+
+  $("auto-start")?.addEventListener("click", () => {
+    startAutoSetup().catch((error) =>
+      remember(`automatic setup: ${error.message || error}`, "error")
+    );
+  });
+  $("auto-stop")?.addEventListener("click", () => stopAutoSetup("stopped by you"));
+  $("auto-open")?.addEventListener("click", () => {
+    focusAutoTab().catch(() => {});
+  });
+  $("auto-continue")?.addEventListener("click", () => {
+    continueToKey().catch((error) =>
+      remember(`automatic setup: ${error.message || error}`, "error")
+    );
+  });
+  $("auto-credentials")?.addEventListener("click", () => {
+    if (!autoSetup.tabId || !autoSetup.projectId) {
+      autoLog("no Cloud project id yet — create the project first", "warn");
+      return;
+    }
+    autoLog(`opening the credentials page for ${autoSetup.projectId}`);
+    api.tabs
+      .update(autoSetup.tabId, {
+        url: `https://console.cloud.google.com/apis/credentials?project=${autoSetup.projectId}`,
+      })
+      .catch(() => {});
+  });
+  $("auto-phone-refresh")?.addEventListener("click", () => {
+    scanAutoPhone().catch(() => {});
+  });
+  $("auto-phone-try")?.addEventListener("click", async () => {
+    try {
+      await api.tabs.sendMessage(autoSetup.tabId, {
+        type: "setup-try-another-way",
+      });
+    } catch (_) {
+      // content script gone
+    }
+    await sleep(1200);
+    await scanAutoPhone();
+  });
+  $("auto-json-load")?.addEventListener("click", () => {
+    loadAutoJson($("auto-json")?.value || "").catch(() => {});
+  });
+  $("auto-json-file")?.addEventListener("click", () => {
+    $("auto-json-input")?.click();
+  });
+  $("auto-json-input")?.addEventListener("change", async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    const box = $("auto-json");
+    if (box) box.value = text;
+    await loadAutoJson(text);
+  });
 }
 
 function wireSetup() {
   const panel = $("panel-setup");
   if (!panel) return;
+
+  panel.querySelectorAll("[data-setup-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      setSetup((draft) => {
+        draft.mode = button.dataset.setupMode;
+      }).catch(() => {});
+    });
+  });
 
   panel.addEventListener("click", (event) => {
     // The tick is a real checkbox; let its change event do the work.
@@ -2543,6 +3275,7 @@ function wire() {
   });
 
   wireSetup();
+  wireAutoSetup();
 
   $("start").addEventListener("click", () => start({ preflight: false }));
   $("preflight").addEventListener("click", () => start({ preflight: true }));
@@ -3055,6 +3788,63 @@ function wire() {
         `${email || "account"}: authenticator ${message.enrolled ? "enrolled" : "secret saved"}`,
         "ok"
       );
+      if (
+        message.enrolled &&
+        autoSetup.running &&
+        autoSetup.profile &&
+        autoSetup.tabId &&
+        email === String(autoSetup.profile.adminEmail || "").toLowerCase()
+      ) {
+        autoLog("admin authenticator enrolled; opening the tenant 2SV policy");
+        autoStatus("setting the tenant 2SV policy");
+        setSetup((draft) => {
+          draft.done.twostep = true;
+        }).catch(() => {});
+        api.tabs.update(autoSetup.tabId, { url: AUTO_2SV }).catch(() => {});
+      }
+    }
+    if (message?.type === "setup-report" && message.text) {
+      autoLog(String(message.text), message.level || "info");
+      return false;
+    }
+    if (message?.type === "setup-phone") {
+      handleAutoPhone().catch((error) =>
+        autoLog(`phone gate: ${error.message || error}`, "error")
+      );
+      return false;
+    }
+    if (message?.type === "setup-captcha") {
+      handleAutoCaptcha().catch(() => {});
+      return false;
+    }
+    if (message?.type === "setup-domain" && message.token) {
+      handleAutoDomain(message).catch((error) =>
+        autoLog(`domain: ${error.message || error}`, "error")
+      );
+      return false;
+    }
+    if (message?.type === "setup-domain-verified") {
+      handleAutoDomainVerified().catch(() => {});
+      return false;
+    }
+    if (message?.type === "setup-billing-done") {
+      handleAutoBillingDone().catch(() => {});
+      return false;
+    }
+    if (message?.type === "setup-policy-done") {
+      handleAutoPolicyDone().catch(() => {});
+      return false;
+    }
+    if (message?.type === "setup-client" && message.client_id && message.client_secret) {
+      handleAutoClient(message).catch((error) =>
+        autoLog(`OAuth client: ${error.message || error}`, "error")
+      );
+      return false;
+    }
+    if (message?.type === "setup-project" && message.project) {
+      autoSetup.projectId = String(message.project);
+      autoLog(`Cloud project id: ${autoSetup.projectId}`);
+      return false;
     }
     if (message?.type === "log-line" && message.line) {
       // Our own lines were appended when they happened; this is the echo.

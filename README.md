@@ -49,10 +49,21 @@ The runner opens on install. If it does not, click the toolbar icon and choose
    and approve the consent tab as the tenant admin. A ready-made key with
    `client_id`, `client_secret` and `refresh_token` can be pasted instead. The
    domain is detected from the tenant, so there is no domain field.
-2. **Setup** — the checklist turns green as each step is proven. The DuckDNS
-   card writes the `google-site-verification` TXT record for you if you give it
-   the account token, and the Phone gate card reads the admin signup QR. Set
-   tenant 2SV **Enforcement** to **On** with **Methods** = *Any except
+2. **Setup** — pick one of three modes:
+   - **Buy** — DM `g_oose` or `kingdudely` for a ready key; paste it in Keys.
+   - **Manual** — the five-step guide. The checklist turns green as each step is
+     proven. The DuckDNS card writes the `google-site-verification` TXT record
+     for you, and the Phone gate card reads the admin signup QR.
+   - **Automatic** — opens the Cloud Identity signup, fills the business,
+     contact, domain and admin forms, writes the DuckDNS TXT record, verifies the
+     domain, activates Cloud Identity Free, enrols the admin authenticator, and
+     drives the Cloud console. It pauses at the phone gate: the QR image and any
+     decoded number/message are shown in the Setup tab, the setup tab is brought
+     forward, and the run resumes when Google lets the page through. A captcha is
+     handled the same way. If a console page changes under it, the automatic tab
+     logs where it stopped and offers a JSON paste box so you can finish the key
+     without leaving the runner.
+   Set tenant 2SV **Enforcement** to **On** with **Methods** = *Any except
    verification codes via text, phone call*: enforcement off makes Google ask for
    a phone number on every fresh account, and a method list that allows nothing
    enroll-able produces *"Your sign-in settings don't meet your organization's
@@ -91,6 +102,7 @@ extension/
   runner.html/.css/.js   the run loop and the whole UI
   background.js          opens the runner, owns the log ring
   content/google.js      fills Google's sign-in pages
+  content/setup.js       drives the automatic Cloud Identity signup / console
   content/awake.js       main-world shim: frame clock + visibility for hidden lanes
   lib/                   admin, lanes, keys, consent, QR, storage
 ```

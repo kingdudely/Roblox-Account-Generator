@@ -622,16 +622,21 @@
     // never starts and the prime gives up with no secret.
     if (
       /authenticator app/i.test(body) &&
-      /set up authenticator/i.test(body) &&
+      /set up/i.test(body) &&
       !state.otpSecret &&
       !state.setupStarted
     ) {
       act("setup-authenticator", () => {
         state.setupStarted = true;
-        const hit = clickByText(
-          ["set up authenticator"],
-          'button,[role="button"],[role="link"],a'
-        );
+        const hit =
+          clickExact(
+            ["set up authenticator", "set up"],
+            'button,[role="button"],[role="link"],a'
+          ) ||
+          clickByText(
+            ["set up authenticator"],
+            'button,[role="button"],[role="link"],a'
+          );
         if (hit) once("setup-authenticator", `authenticator setup -> ${hit}`);
         return hit;
       });

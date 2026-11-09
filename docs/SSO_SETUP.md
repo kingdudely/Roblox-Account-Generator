@@ -92,6 +92,21 @@ the Directory API, marks the identity `deleted`, and frees the seat. The
 exported Roblox cookie stays valid; Google sign-in and password recovery through
 the deleted address do not.
 
+### 1.1 Three ways to get a key
+
+The Setup tab has three modes:
+
+| mode | what it does |
+|---|---|
+| **Buy** | Points at the two sellers. No tenant, no phone gate, no OAuth client. Paste the bought `client_id` / `client_secret` / `refresh_token` into Keys. |
+| **Manual** | The five-step guide below. Every field and phone-gate decoder stays available. |
+| **Automatic** | Opens the Cloud Identity signup, fills the business/contact/domain/admin forms, writes the DuckDNS TXT record, verifies the domain, activates Cloud Identity Free, enrols the admin authenticator, and drives the Cloud console. It pauses only for Google's phone gate (and a captcha): the QR image and any decoded number/message are shown in Setup, the setup tab is brought forward, and the run resumes when Google lets the page through. |
+
+The automatic mode is best-effort against Google's changing console. When a page
+does not match, it says where it stopped and leaves the setup tab open so you can
+take over; the JSON box in the same panel adds and authorizes a Desktop OAuth
+client without leaving the runner.
+
 Roblox assigns the username. The username step at `/sso-complete` is skippable;
 the session works without it.
 

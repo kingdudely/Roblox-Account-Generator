@@ -200,8 +200,132 @@
 
           <!-- SETUP ---------------------------------------------------------------->
           <div class="tabpanel" id="panel-setup">
-            <div class="card setup-banner">
-              <p>DM <b>g_oose</b> or <b>kingdudely</b> on Discord to buy pre-made keys!</p>
+            <div class="card setup-mode-card">
+              <div class="card-head">
+                <h2>Setup method</h2>
+                <span class="hint">pick one &mdash; the manual steps stay available</span>
+              </div>
+              <div class="setup-modes" role="tablist" aria-label="Setup method">
+                <button class="btn setup-mode" data-setup-mode="buy" role="tab">Buy a key</button>
+                <button class="btn setup-mode" data-setup-mode="manual" role="tab">Manual</button>
+                <button class="btn setup-mode" data-setup-mode="auto" role="tab">Automatic</button>
+              </div>
+              <p class="note" id="setup-mode-note"></p>
+            </div>
+
+            <div class="card setup-banner" id="setup-buy-view">
+              <p>DM <b>g_oose</b> or <b>kingdudely</b> on Discord to buy a pre-made key!</p>
+              <p class="note">
+                Ask for <span class="mono">client_id</span>,
+                <span class="mono">client_secret</span> and
+                <span class="mono">refresh_token</span>, then paste them in <b>Keys</b>.
+                The key is already backed by a funded tenant, so there is no signup,
+                no phone gate, and no OAuth client to build.
+              </p>
+              <div class="buttons">
+                <button class="btn tiny jump-tab" data-tab="keys">Go to Keys</button>
+              </div>
+            </div>
+
+            <div class="card setup-auto" id="setup-auto-view">
+              <div class="card-head">
+                <h2>Automatic setup</h2>
+                <span class="hint" id="auto-status">idle</span>
+              </div>
+              <p class="note">
+                The extension opens Google's Cloud Identity signup, fills the forms,
+                verifies the domain through DuckDNS, and pauses only for the phone
+                gate (and a captcha if Google asks). The setup tab is brought
+                forward at that point; scan the QR or send the SMS, then the run
+                continues by itself.
+              </p>
+              <div class="controls">
+                <label class="field">
+                  <span>Recovery email</span>
+                  <input id="auto-recovery" type="email" placeholder="you@gmail.com" />
+                </label>
+                <label class="field">
+                  <span>Business name</span>
+                  <input id="auto-business" placeholder="Nova Harbor Supply" />
+                </label>
+                <label class="field">
+                  <span>Admin username</span>
+                  <input id="auto-admin" placeholder="admin" />
+                </label>
+                <label class="field">
+                  <span>Admin password</span>
+                  <input id="auto-password" type="text" autocomplete="off" />
+                </label>
+                <label class="field">
+                  <span>DuckDNS token</span>
+                  <input id="auto-token" type="password" autocomplete="off" placeholder="account token" />
+                </label>
+                <label class="field">
+                  <span>DuckDNS subdomain</span>
+                  <input id="auto-sub" placeholder="farm" />
+                </label>
+              </div>
+              <div class="buttons">
+                <button id="auto-start" class="btn primary">Start automatic setup</button>
+                <button id="auto-stop" class="btn danger">Stop</button>
+                <button id="auto-open" class="btn ghost">Open setup tab</button>
+                <button id="auto-continue" class="btn ghost">Continue to key</button>
+                <button id="auto-credentials" class="btn ghost">Open credentials</button>
+              </div>
+
+              <div class="auto-phone" id="auto-phone" hidden>
+                <div class="card-head">
+                  <h2>Phone gate</h2>
+                  <span class="hint" id="auto-phone-source">waiting for Google</span>
+                </div>
+                <div class="auto-phone-grid">
+                  <div class="auto-qr-wrap">
+                    <img id="auto-qr" alt="Phone verification QR code" />
+                    <p class="note" id="auto-qr-hint">The QR appears when Google asks for it.</p>
+                  </div>
+                  <div class="auto-phone-copy">
+                    <div class="gate-row">
+                      <div class="card-head">
+                        <h2>Number</h2>
+                        <button class="btn tiny ghost copy" data-copy-target="auto-phone-number">Copy</button>
+                      </div>
+                      <div id="auto-phone-number" class="bigvalue mono">&mdash;</div>
+                    </div>
+                    <div class="gate-row">
+                      <div class="card-head">
+                        <h2>Message</h2>
+                        <button class="btn tiny ghost copy" data-copy-target="auto-phone-body">Copy</button>
+                      </div>
+                      <div id="auto-phone-body" class="bigvalue mono">&mdash;</div>
+                    </div>
+                    <div class="buttons">
+                      <button id="auto-phone-refresh" class="btn tiny ghost">Scan tab again</button>
+                      <button id="auto-phone-try" class="btn tiny ghost">Try another way</button>
+                      <a id="auto-phone-link" class="btn tiny ghost" target="_blank" rel="noreferrer" hidden>Open link</a>
+                      <a id="auto-phone-sms" class="btn tiny ghost" hidden>Open SMS</a>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="auto-json" id="auto-json-box" hidden>
+                <div class="card-head">
+                  <h2>Finish the key</h2>
+                  <span class="hint">if the console stops short</span>
+                </div>
+                <p class="note">
+                  Paste the Desktop OAuth client JSON here. The extension will add the
+                  key and authorize it as the new admin in the same container.
+                </p>
+                <textarea id="auto-json" rows="4" placeholder='{"installed":{"client_id":"...","client_secret":"..."}}'></textarea>
+                <div class="buttons">
+                  <button id="auto-json-load" class="btn primary">Add and authorize</button>
+                  <button id="auto-json-file" class="btn ghost">Choose file</button>
+                  <input id="auto-json-input" type="file" accept=".json,application/json" hidden />
+                </div>
+              </div>
+
+              <div class="auto-log" id="auto-log" aria-live="polite"></div>
             </div>
 
             <div class="card setup-progress">
