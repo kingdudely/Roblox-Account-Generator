@@ -34,6 +34,12 @@
     apiSent: false,
     consentSent: false,
     consentStarted: false,
+    scopeIndex: 0,
+    scopeTyped: "",
+    scopeSubmitted: false,
+    scopeSent: false,
+    scopeStartedAt: 0,
+    scopeAt: 0,
     paused: false,
     lastHandoff: 0,
     adminSent: "",
@@ -67,7 +73,7 @@
     note(text, level);
   }
 
-  function fill(element, value) {
+  function fill(element, value, blur = true) {
     if (!element || value === undefined || value === null) return false;
     try {
       element.focus();
@@ -80,7 +86,7 @@
       element.dispatchEvent(new Event("input", { bubbles: true }));
       element.dispatchEvent(new Event("change", { bubbles: true }));
       element.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "a" }));
-      element.blur();
+      if (blur) element.blur();
       return true;
     } catch (_) {
       return false;
@@ -97,6 +103,15 @@
 
   const CONTROLS =
     'button,[role="button"],[role="link"],[role="menuitem"],[role="radio"],a,input[type="submit"],input[type="button"]';
+  const SCOPE_CONTROLS =
+    'button,[role="button"],[role="tab"],[role="link"],a,[role="checkbox"],input[type="checkbox"]';
+  const SCOPE_TARGETS = [
+    { needle: "admin.directory.user.security", re: /admin\.directory\.user\.security/i },
+    { needle: "admin.directory.user", re: /admin\.directory\.user(?!\.security)/i },
+    { needle: "admin.directory.domain.readonly", re: /admin\.directory\.domain\.readonly/i },
+    { needle: "admin.reports.audit.readonly", re: /admin\.reports\.audit\.readonly/i },
+    { needle: "cloud-identity.policies.readonly", re: /cloud-identity\.policies\.readonly/i },
+  ];
 
   function clickByText(needles, scope = CONTROLS, exact = false) {
     const nodes = [...document.querySelectorAll(scope)].filter(visible);
@@ -377,8 +392,172 @@
     return "";
   }
 
+  function scopeFilter() {
+    const roots = [...document.querySelectorAll('[role="dialog"]')].filter(visible);
+    roots.push(document);
+    for (const root of roots) {
+      const inputs = [
+        ...root.querySelectorAll(
+          'input[type="text"], input[type="search"], input:not([type]), [role="searchbox"]'
+        ),
+      ].filter(visible);
+      const label = (el) =>
+        `${el.placeholder || ""} ${el.getAttribute("aria-label") || ""} ${el.id || ""}`;
+      const filter = inputs.find((el) => /filter/i.test(label(el)));
+      if (filter) return filter;
+      const search = inputs.find((el) => /search/i.test(label(el)));
+      if (search) return search;
+    }
+    return null;
+  }
+
+  function scopeRow(target, root = document) {
+    for (const row of [...root.querySelectorAll('tr,[role="row"]')].filter(visible)) {
+      if (!target.re.test(row.innerText || "")) continue;
+      const box = row.querySelector(
+        'input[type="checkbox"], [role="checkbox"]'
+      );
+      if (box && !box.disabled) {
+        const checked =
+          "checked" in box
+            ? Boolean(box.checked)
+            : box.getAttribute("aria-checked") === "true";
+        return { row, box, checked };
+      }
+    }
+    for (const box of [
+      ...root.querySelectorAll('input[type="checkbox"], [role="checkbox"]'),
+    ]) {
+      if (box.disabled) continue;
+      const row = box.closest('tr,[role="row"],li,[role="listitem"],div');
+      if (!row || !visible(row)) continue;
+      if (!target.re.test(row.innerText || "")) continue;
+      const checked =
+        "checked" in box
+          ? Boolean(box.checked)
+          : box.getAttribute("aria-checked") === "true";
+      return { row, box, checked };
+    }
+    return null;
+  }
+
+  function sendScopeReady() {
+    if (state.scopeSent) return;
+    state.scopeSent = true;
+    note("OAuth scopes added", "ok");
+    send({ type: "setup-scopes-ready" });
+  }
+
+  function failScope(error) {
+    if (state.scopeSent) return;
+    state.scopeSent = true;
+    note(`scope automation failed: ${error}`, "warn");
+    send({ type: "setup-scopes-failed", error: String(error) });
+  }
+
+  function scopesTick(body) {
+    if (state.scopeSent) return;
+    if (!state.scopeStartedAt) state.scopeStartedAt = Date.now();
+    if (Date.now() - state.scopeStartedAt > 120_000) {
+      failScope("timed out while adding scopes");
+      return;
+    }
+
+    if (state.scopeSubmitted) {
+      // The picker closing is the reliable signal that Update was accepted.
+      // Do not treat the rows still being visible in the open picker as success.
+      if (!scopeFilter()) {
+        sendScopeReady();
+        return;
+      }
+      if (Date.now() - state.scopeAt > 20_000) {
+        failScope("the scope picker did not confirm the scopes");
+      }
+      return;
+    }
+
+    if (/get started/i.test(body)) {
+      failScope("the OAuth consent screen is not set up yet");
+      return;
+    }
+
+    const filter = scopeFilter();
+    if (!filter) {
+      if (/add or remove scopes/i.test(body)) {
+        act("scope-open-picker", () =>
+          clickByText(["add or remove scopes"], SCOPE_CONTROLS)
+        );
+        return;
+      }
+      if (/data access/i.test(body)) {
+        act("scope-data-access", () =>
+          clickByText(["data access"], SCOPE_CONTROLS)
+        );
+        return;
+      }
+      if (!state.scopeAt) state.scopeAt = Date.now();
+      if (Date.now() - state.scopeAt > 30_000) {
+        failScope("could not find the scope picker");
+      }
+      return;
+    }
+
+    if (state.scopeIndex >= SCOPE_TARGETS.length) {
+      if (!state.scopeSubmitted) {
+        state.scopeSubmitted = true;
+        state.scopeAt = Date.now();
+        act("scope-update", () =>
+          clickByText(
+            ["update", "add to table", "save", "confirm", "done"],
+            SCOPE_CONTROLS
+          )
+        );
+      }
+      return;
+    }
+
+    const target = SCOPE_TARGETS[state.scopeIndex];
+    if (state.scopeTyped !== target.needle) {
+      fill(filter, target.needle, false);
+      state.scopeTyped = target.needle;
+      state.scopeAt = Date.now();
+      return;
+    }
+
+    const picker = filter.closest('[role="dialog"]') || document;
+    const row = scopeRow(target, picker);
+    if (!row) {
+      if (Date.now() - state.scopeAt > 25_000) {
+        failScope(`could not find ${target.needle} in the picker`);
+      }
+      return;
+    }
+    if (row.checked) {
+      state.scopeIndex += 1;
+      state.scopeTyped = "";
+      state.scopeAt = Date.now();
+      return;
+    }
+    try {
+      row.box.click();
+    } catch (_) {
+      try {
+        row.row.click();
+      } catch (_) {
+        // next tick retries
+      }
+    }
+    state.scopeIndex += 1;
+    state.scopeTyped = "";
+    state.scopeAt = Date.now();
+  }
+
   function consoleTick(body) {
     detectAdmin();
+    if (state.phase === "key.scopes") {
+      scopesTick(body);
+      return;
+    }
     const project = extractProjectId();
     if (project) {
       state.projectId = project;
@@ -542,7 +721,8 @@
     if (message.type === "setup-fill") {
       state.profile = message.profile || state.profile;
       const phase = message.phase || "";
-      if (phase !== state.phase) {
+      const wasPaused = state.paused;
+      if (phase !== state.phase || wasPaused) {
         // A redo of one sub-step must see its one-shot signals again even when
         // the worker tab stayed on the same document.
         if (phase === "tenant.verify") {
@@ -561,6 +741,14 @@
           state.consentStarted = false;
         }
         if (phase === "key.client") state.clientSent = false;
+        if (phase === "key.scopes") {
+          state.scopeIndex = 0;
+          state.scopeTyped = "";
+          state.scopeSubmitted = false;
+          state.scopeSent = false;
+          state.scopeStartedAt = 0;
+          state.scopeAt = 0;
+        }
       }
       state.phase = phase;
       state.paused = false;

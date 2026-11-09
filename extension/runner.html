@@ -242,7 +242,7 @@
             <div class="card setup-progress">
               <div class="card-head">
                 <h2>Setup</h2>
-                <span class="hint" id="setup-count">0 of 5 done</span>
+                <span class="hint" id="setup-count">0/24 sub-steps · 0/5 steps</span>
                 <div class="buttons">
                   <button id="auto-start-top" class="btn tiny primary">Automate remaining</button>
                   <button id="setup-jump" class="btn tiny">Next step</button>
@@ -601,15 +601,17 @@
                   <li data-substep="key.consent">
                     <p>OAuth consent screen &rarr; app name, support email, <b>Internal</b> audience.</p>
                     <p class="note">
-                      The automatic branch fills the app information and picks <b>Internal</b>. It
-                      stops before the scope picker so you can confirm the five scopes yourself.
+                      The automatic branch fills the app information and picks <b>Internal</b>.
+                      The next sub-step tries to add the five scopes; confirm them and tick that
+                      box if the picker differs.
                     </p>
                     <div class="substep-actions">
                       <button class="btn tiny link-out" data-href="https://console.cloud.google.com/apis/credentials/consent">Open consent screen</button>
                     </div>
                   </li>
                   <li data-substep="key.scopes">
-                    <p>Add these scopes on the consent screen:</p>
+                    <p>Add these scopes on the consent screen. <b>Auto</b> filters the picker and
+                    ticks each scope; if it stalls, add them manually and tick this box.</p>
                     <p class="note mono">
                       admin.directory.user<br />
                       admin.directory.user.security<br />

@@ -2622,7 +2622,7 @@ function substepBlockedReason(id) {
     return `needs: ${missing.map((dep) => SUBSTEP_BY_ID[dep]?.label || dep).join(", ")}`;
   }
   if (
-    ["key.admin-sdk", "key.consent", "key.client"].includes(id) &&
+    ["key.admin-sdk", "key.consent", "key.scopes", "key.client"].includes(id) &&
     !autoProjectId()
   ) {
     return "run Create the Cloud project with Auto first";
@@ -2904,9 +2904,18 @@ function renderSetup() {
 
   renderSubsteps();
 
-  setText("setup-count", `${complete} of ${SETUP_TICKABLE.length} done`);
+  const substepTotal = SUBSTEPS.length;
+  const substepDone = SUBSTEPS.filter((entry) => isSubstepDone(entry.id)).length;
+  setText(
+    "setup-count",
+    `${substepDone}/${substepTotal} sub-steps · ${complete}/${SETUP_TICKABLE.length} steps`
+  );
   const bar = $("setup-bar");
-  if (bar) bar.style.width = `${Math.round((complete / SETUP_TICKABLE.length) * 100)}%`;
+  if (bar) {
+    bar.style.width = `${
+      substepTotal ? ((substepDone / substepTotal) * 100).toFixed(1) : 0
+    }%`;
+  }
 
   const hide = $("setup-hide");
   if (hide) {
@@ -3024,7 +3033,15 @@ const SUBSTEPS = [
     requires: ["key.project"],
     timeout: 130_000,
   },
-  { id: "key.scopes", step: "key", label: "Add the five OAuth scopes" },
+  {
+    id: "key.scopes",
+    step: "key",
+    label: "Add the five OAuth scopes",
+    auto: true,
+    batch: true,
+    requires: ["key.consent"],
+    timeout: 180_000,
+  },
   {
     id: "key.client",
     step: "key",
@@ -3051,12 +3068,28 @@ const SUBSTEPS = [
     label: "Check the key",
     auto: true,
     batch: false,
-    requires: [],
+    requires: ["run.key"],
     timeout: 45_000,
     local: true,
   },
-  { id: "run.first", step: "run", label: "Run one identity" },
-  { id: "run.export", step: "run", label: "Export accounts" },
+  {
+    id: "run.first",
+    step: "run",
+    label: "Run one identity",
+    auto: true,
+    batch: false,
+    requires: ["run.key"],
+    local: true,
+  },
+  {
+    id: "run.export",
+    step: "run",
+    label: "Export accounts",
+    auto: true,
+    batch: false,
+    requires: ["run.first"],
+    local: true,
+  },
 ];
 
 const SUBSTEP_BY_ID = Object.fromEntries(SUBSTEPS.map((entry) => [entry.id, entry]));
@@ -3276,8 +3309,22 @@ function buildBatchQueue() {
   const queue = [];
   const skipped = [];
   let blocked = null;
+  const projectTasks = [
+    "key.admin-sdk",
+    "key.consent",
+    "key.scopes",
+    "key.client",
+  ];
   for (const def of SUBSTEPS) {
     if (!def.auto || !def.batch || willDone.has(def.id)) continue;
+    if (
+      projectTasks.includes(def.id) &&
+      isSubstepDone("key.project") &&
+      !autoProjectId()
+    ) {
+      blocked = { id: "key.project", missing: [] };
+      break;
+    }
     if (def.id === "twostep.policy" && policyBlocked()) {
       // The authenticator is not available for this admin, so the policy is
       // unsafe to change automatically. Skip it and keep the key tasks moving.
@@ -3308,12 +3355,18 @@ async function startAutoSetup() {
   const { queue, blocked, skipped } = buildBatchQueue();
   if (!queue.length) {
     if (blocked) {
+      const blockedDef = SUBSTEP_BY_ID[blocked.id];
       const labels = missingSubstepLabels(blocked.missing).join(", ");
       await remember(
-        `auto-run is waiting on a manual sub-step: ${labels}`,
+        labels
+          ? `auto-run is waiting on a manual sub-step: ${labels}`
+          : `manual check needed: ${blockedDef?.label || blocked.id}`,
         "warn"
       );
-      openStep(SUBSTEP_BY_ID[blocked.missing[0]]?.step || "tenant", true);
+      openStep(
+        SUBSTEP_BY_ID[blocked.missing[0]]?.step || blockedDef?.step || "tenant",
+        true
+      );
     } else if (skipped.length) {
       await remember(
         `manual check needed: ${missingSubstepLabels(skipped).join(", ")}`,
@@ -3467,6 +3520,10 @@ async function beginAutoRun(queue, batch, blocked) {
 
 function stopAutoSetup(reason = "stopped") {
   const current = autoSetup.current;
+  if (running) {
+    stopRequested = true;
+    remember("stopping the active run after the current identity", "warn").catch(() => {});
+  }
   autoSetup.running = false;
   autoSetup.stop = true;
   autoSetup.current = "";
@@ -3606,7 +3663,8 @@ function autoTaskUrl(id) {
         ? `${AUTO_ADMIN_SDK}?project=${encodeURIComponent(project)}`
         : "";
     }
-    case "key.consent": {
+    case "key.consent":
+    case "key.scopes": {
       const project = autoProjectId();
       return project
         ? `${AUTO_CONSENT}?project=${encodeURIComponent(project)}`
@@ -3652,7 +3710,10 @@ async function beginAutoTask(id) {
   if (!url) {
     await failAutoTask(
       id,
-      id === "key.admin-sdk" || id === "key.consent" || id === "key.client"
+      id === "key.admin-sdk" ||
+      id === "key.consent" ||
+      id === "key.scopes" ||
+      id === "key.client"
         ? "no Cloud project id yet — run Create the Cloud project first"
         : "this sub-step has no automatic page"
     );
@@ -3801,7 +3862,9 @@ async function finishAutoTask(id, { error = "", key = "" } = {}) {
   if (id === "run.check") autoSetup.endedOnKey = true;
   // The consent and client pages are left open for the manual scope work.
   // Stop the page automation there so it cannot click behind the user.
-  if (id === "key.consent" || id === "key.client") pauseAutoContent();
+  if (id === "key.consent" || id === "key.scopes" || id === "key.client") {
+    pauseAutoContent();
+  }
 
   autoLog(`${def?.label || id} — done`, "ok");
   if (!autoSetup.queue.length) {
@@ -3873,22 +3936,53 @@ async function runLocalSubstep(def) {
   renderAutoSetup();
   await setSubstep(def.id, { status: "running", error: "" });
   try {
-    const key =
-      state.keys.find((entry) => entry.status === "ok") ||
-      state.keys.find((entry) => !entry.needs_consent) ||
-      state.keys[0];
-    if (!key) throw new Error("load a key in Keys first");
-    await withTimeout(checkKey(key.id), def.timeout || 45_000, "key check");
-    const updated = state.keys.find((entry) => entry.id === key.id);
-    if (!updated || updated.status !== "ok") {
-      throw new Error(updated?.message || "the key check did not pass");
+    if (def.id === "run.first") {
+      if (running) throw new Error("a run is already in progress");
+      if (!state.keys.length) throw new Error("load a key in Keys first");
+      if (!state.keys.some((key) => !key.needs_consent)) {
+        throw new Error("authorize the key first");
+      }
+      const before = state.accounts.length;
+      await start({ preflight: true });
+      state = await load();
+      if (state.accounts.length <= before) {
+        throw new Error(
+          "the preflight did not create an account — check the Run console for the reason"
+        );
+      }
+      await markSubstepDone("run.key");
+      await markSubstepDone(def.id);
+      autoSetup.endedOnKey = true;
+      autoSetup.phase = "done";
+      autoStatus(`first account created — ${state.accounts.length} total`);
+      autoLog("preflight created the first account", "ok");
+      switchTab("accounts");
+    } else if (def.id === "run.export") {
+      if (!state.accounts.length) throw new Error("no accounts to export yet");
+      await exportAccounts(true);
+      await markSubstepDone(def.id);
+      autoSetup.endedOnKey = true;
+      autoSetup.phase = "done";
+      autoStatus(`exported ${state.accounts.length} account(s)`);
+      autoLog(`exported ${state.accounts.length} account(s)`, "ok");
+    } else {
+      const key =
+        state.keys.find((entry) => entry.status === "ok") ||
+        state.keys.find((entry) => !entry.needs_consent) ||
+        state.keys[0];
+      if (!key) throw new Error("load a key in Keys first");
+      await withTimeout(checkKey(key.id), def.timeout || 45_000, "key check");
+      const updated = state.keys.find((entry) => entry.id === key.id);
+      if (!updated || updated.status !== "ok") {
+        throw new Error(updated?.message || "the key check did not pass");
+      }
+      await markSubstepDone(def.id);
+      await markSubstepDone("run.key");
+      autoSetup.endedOnKey = true;
+      autoSetup.phase = "done";
+      autoStatus("key check passed");
+      autoLog("key check passed", "ok");
     }
-    await markSubstepDone(def.id);
-    await markSubstepDone("run.key");
-    autoSetup.endedOnKey = true;
-    autoSetup.phase = "done";
-    autoStatus("key check passed");
-    autoLog("key check passed", "ok");
   } catch (error) {
     await setSubstep(def.id, {
       done: false,
@@ -3897,7 +3991,7 @@ async function runLocalSubstep(def) {
     });
     autoSetup.phase = "failed";
     autoStatus(`failed · ${def.label}: ${error.message || error}`);
-    autoLog(`key check failed: ${error.message || error}`, "error");
+    autoLog(`${def.label} failed: ${error.message || error}`, "error");
   } finally {
     autoSetup.running = false;
     autoSetup.stop = true;
@@ -4912,6 +5006,24 @@ function wire() {
         finishAutoTask("key.consent").catch((error) =>
           autoLog(`consent: ${error.message || error}`, "error")
         );
+      }
+      return false;
+    }
+    if (message?.type === "setup-scopes-ready") {
+      if (autoSetup.current === "key.scopes") {
+        finishAutoTask("key.scopes").catch((error) =>
+          autoLog(`scopes: ${error.message || error}`, "error")
+        );
+      }
+      return false;
+    }
+    if (message?.type === "setup-scopes-failed") {
+      if (autoSetup.current === "key.scopes") {
+        failAutoTask(
+          "key.scopes",
+          message.error ||
+            "could not add the scopes automatically — add them manually and tick the sub-step"
+        ).catch((error) => autoLog(`scopes: ${error.message || error}`, "error"));
       }
       return false;
     }

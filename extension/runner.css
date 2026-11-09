@@ -1459,6 +1459,10 @@ details.card[open] summary {
   margin: 4px 0 10px;
 }
 
+.setup-progress .bar i {
+  transition-duration: 0.7s;
+}
+
 /* Reused checklist, rendered as compact evidence chips instead of rows. */
 .checklist.chips {
   display: flex;

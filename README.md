@@ -69,9 +69,10 @@ The runner opens on install. If it does not, click the toolbar icon and choose
      signup QR and read the SMS number/message.
    - **Sub-step checklist.** Every sub-step has a checkbox. Tick the ones you
      have already done. Ticking a later sub-step checks everything before it;
-     unticking one clears everything after it. Automatable sub-steps also have
-     an **Auto** button that runs only that one task; **Automate remaining**
-     runs every unchecked automatable sub-step in order. The **Keys** tab has a
+     unticking one clears everything after it. The setup bar counts sub-steps,
+     so it moves on every tick. Automatable sub-steps also have an **Auto**
+     button that runs only that one task; **Automate remaining** runs every
+     unchecked automatable sub-step in order. The **Keys** tab has a
      **Create a key in Setup** button that opens this step.
    - **Automate remaining** opens one new tab at `admin.google.com` in the
      `RAC setup` container (Chrome: the current profile). Sign in there as the
@@ -84,10 +85,14 @@ The runner opens on install. If it does not, click the toolbar icon and choose
      needs a human, it waits in the worker tab; the run resumes when the page
      moves on. Use **Stop** to go back to manual.
    - Tasks with prerequisites have their Auto button disabled until the earlier
-     sub-step is ticked. The five OAuth scopes are deliberately manual: the
-     consent task stops at the scope picker, you add the scopes, tick that
-     sub-step, then run the remaining tasks. This avoids producing a key that
-     authenticates but answers 403 for the audit and policy reads.
+     sub-step is ticked. The five OAuth scopes are attempted automatically: the
+     Auto task filters the scope picker and ticks each scope. If the picker
+     differs, add the scopes manually and tick the sub-step; the remaining key
+     tasks stay gated on it, so a key cannot silently miss the audit/policy
+     scopes.
+   - Step 5 also has Auto buttons for **Check the key**, **Run one identity**
+     and **Export accounts**. Those run locally and are not part of
+     **Automate remaining**.
    - **Already-enrolled admin safety.** If the admin already has 2SV but the
      extension has no authenticator secret for it, it does not change the tenant
      policy. A phone-only admin would be locked out. It marks the authenticator
