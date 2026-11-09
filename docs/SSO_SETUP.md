@@ -85,6 +85,13 @@ Two things fall out of that shape:
   After that nothing in the pipeline touches Google again, which is why a seat
   can be recycled later without touching the Roblox account.
 
+The extension recycles the seat automatically when **Delete the Google account
+after a successful Roblox signup** is on (the default): a successful lane queues
+the Google user for deletion, and a paced background worker removes it through
+the Directory API, marks the identity `deleted`, and frees the seat. The
+exported Roblox cookie stays valid; Google sign-in and password recovery through
+the deleted address do not.
+
 Roblox assigns the username. The username step at `/sso-complete` is skippable;
 the session works without it.
 

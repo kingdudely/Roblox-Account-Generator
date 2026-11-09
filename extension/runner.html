@@ -675,6 +675,18 @@
                 <input id="accept-terms" type="checkbox" checked />
                 <span>Accept Roblox's updated Terms of Service automatically</span>
               </label>
+              <label class="field check">
+                <input id="delete-google-after" type="checkbox" checked />
+                <span>Delete the Google account after a successful Roblox signup</span>
+              </label>
+              <p class="note">
+                The Google user is only needed once, at signup. Deleting it frees
+                the Cloud Identity seat for the next identity. It also means the
+                exported Roblox cookie is the only way into that account: Google
+                sign-in and password recovery through that address stop working.
+                Deletions are queued and paced by <b>Seconds between</b> on the
+                Setup tab.
+              </p>
               <p class="note">
                 <b>Roblox generated</b> keeps the name the signup assigned.
                 <b>Our generator</b> types a random name from the local word lists into the username

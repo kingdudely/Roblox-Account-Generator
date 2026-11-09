@@ -140,6 +140,9 @@ function renderStats() {
 
   const perKey = new Map();
   for (const identity of state.identities) {
+    // A deleted Google user no longer holds a seat. Counting the tombstone row
+    // would make the meter drift down forever as identities are recycled.
+    if (identity.status === "deleted") continue;
     perKey.set(identity.key_id, (perKey.get(identity.key_id) || 0) + 1);
   }
   const seats = state.keys.reduce(
@@ -230,6 +233,9 @@ function renderSettings() {
   const acceptTerms = $("accept-terms");
   if (acceptTerms) acceptTerms.checked = settings.acceptTerms !== false;
 
+  const deleteGoogleAfter = $("delete-google-after");
+  if (deleteGoogleAfter) deleteGoogleAfter.checked = settings.deleteGoogleAfterSuccess !== false;
+
   const concurrency = $("concurrency");
   if (concurrency) {
     concurrency.value = String(settings.concurrency || 8);
@@ -274,7 +280,9 @@ function renderKeys() {
   }
 
   for (const key of state.keys) {
-    const used = state.identities.filter((identity) => identity.key_id === key.id).length;
+    const used = state.identities.filter(
+      (identity) => identity.key_id === key.id && identity.status !== "deleted"
+    ).length;
     const row = document.createElement("div");
     row.className = "keyrow";
 
@@ -840,6 +848,91 @@ async function deleteKeyUsers(id) {
     removed.size ? "ok" : "warn"
   );
   await refresh();
+}
+
+// ------------------------------------------------------------ auto-delete queue
+
+// A successful signup leaves a Google user behind that holds a Cloud Identity
+// seat. The lane should not stop and wait for the deletion, so successes enter
+// this queue and one worker walks it with the same jittered pacing as the manual
+// Delete users button. A failure leaves the identity as an account so the
+// manual path can retry it.
+const googleDeleteQueue = [];
+let googleDeleteRunning = false;
+
+async function queueGoogleDelete(key, identity) {
+  if (!key || !identity?.email) return;
+  googleDeleteQueue.push({ key, identity });
+  await remember(
+    `${identity.email}: queued for Google deletion (${googleDeleteQueue.length} pending)`,
+    "info"
+  );
+  drainGoogleDeleteQueue().catch((error) =>
+    remember(`google auto-delete queue: ${error.message || error}`, "warn")
+  );
+}
+
+async function drainGoogleDeleteQueue() {
+  if (googleDeleteRunning) return;
+  googleDeleteRunning = true;
+  try {
+    let first = true;
+    while (googleDeleteQueue.length) {
+      const settings = state.settings || {};
+      const pace = Math.max(5, Math.min(600, Number(settings.deletePaceSeconds) || 45));
+      if (!first) {
+        const wait = pace * 1000 + Math.floor(Math.random() * pace * 200);
+        await remember(
+          `google auto-delete: holding ${Math.round(wait / 1000)}s before the next one`,
+          "info"
+        );
+        await sleep(wait);
+      }
+      first = false;
+
+      const { key, identity } = googleDeleteQueue.shift();
+      const email = String(identity.email || "");
+      try {
+        const result = await admin.deleteUser(key, email);
+        await mutate((draft) => {
+          const row = draft.identities.find((entry) => entry.id === identity.id);
+          if (row) row.status = "deleted";
+          const target = draft.keys.find((entry) => entry.id === key.id);
+          if (target && result.deleted && typeof target.seats === "number") {
+            target.seats = Math.max(0, target.seats - 1);
+            target.message = `${target.seats}/50 seats used`;
+          }
+          const account = draft.accounts.find(
+            (entry) => entry.identity_id === identity.id
+          );
+          if (account) account.google_deleted_at = new Date().toISOString();
+        });
+        // Keep the in-memory copy in step; otherwise the meter stays stale
+        // until the next full refresh.
+        const local = state.identities.find((entry) => entry.id === identity.id);
+        if (local) local.status = "deleted";
+        const localKey = state.keys.find((entry) => entry.id === key.id);
+        if (localKey && result.deleted && typeof localKey.seats === "number") {
+          localKey.seats = Math.max(0, localKey.seats - 1);
+          localKey.message = `${localKey.seats}/50 seats used`;
+        }
+        await remember(
+          `${email}: Google account ${result.missing ? "already gone" : "deleted — seat freed"}`,
+          result.missing ? "warn" : "ok"
+        );
+      } catch (error) {
+        await remember(
+          `${email}: Google auto-delete failed — ${String(error.message || error).slice(0, 160)}`,
+          "warn"
+        );
+      }
+      renderKeys();
+      renderQueue();
+      renderStats();
+    }
+  } finally {
+    googleDeleteRunning = false;
+  }
 }
 
 async function removeKey(id) {
@@ -1436,6 +1529,11 @@ async function runBatch(queue, preflight) {
                 "warn"
               );
             }
+          }
+          // The Roblox account exists and the cookie is saved. The Google user
+          // has done its job; queue it for deletion so the seat comes back.
+          if (settings.deleteGoogleAfterSuccess !== false) {
+            await queueGoogleDelete(key, identity);
           }
         } else {
           consecutive += 1;
@@ -2548,6 +2646,12 @@ function wire() {
   $("accept-terms").addEventListener("change", async (event) => {
     await mutate((draft) => {
       draft.settings.acceptTerms = Boolean(event.target.checked);
+    });
+  });
+
+  $("delete-google-after").addEventListener("change", async (event) => {
+    await mutate((draft) => {
+      draft.settings.deleteGoogleAfterSuccess = Boolean(event.target.checked);
     });
   });
 

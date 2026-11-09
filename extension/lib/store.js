@@ -32,6 +32,10 @@ export const DEFAULT_SETTINGS = {
   // enrolled and its secret captured. A failed prime falls back to the normal
   // OAuth lane, so this is safe to leave on.
   primeGoogle: true,
+  // The Google user is only needed once, at Roblox signup. Deleting it after a
+  // successful signup frees the Cloud Identity seat for the next identity. The
+  // Roblox cookie is unaffected; Google sign-in for that account is not.
+  deleteGoogleAfterSuccess: true,
   // Egress. Empty means direct. One SOCKS5/HTTP proxy per line; lanes cycle.
   proxyUrl: "",
   proxyList: "",
