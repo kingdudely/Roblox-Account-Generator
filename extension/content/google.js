@@ -37,6 +37,8 @@
     codeRequestAt: 0,
     otpSecret: "",
     otpSubmitted: false,
+    kept: "",
+    keptEnrolled: "",
     enrolled: false,
     settingsAuthStarted: false,
     setupStarted: false,
@@ -211,31 +213,82 @@
     }
   }
 
-  // Google prints the setup key as sixteen base32 characters in groups of four,
-  // either as page text or inside a read-only field.
+  // Google prints the setup key as sixteen or thirty-two base32 characters in
+  // groups of four. It can be uppercase or lowercase, with spaces, and it can
+  // live in page text, a read-only field, or one node per group.
+  function plainSecret(value) {
+    return String(value || "")
+      .toUpperCase()
+      .replace(/[\s\u200b-\u200d\u2060\ufeff-]+/g, "");
+  }
+
+  function looksLikeSetupKey(value) {
+    const clean = plainSecret(value);
+    return (clean.length === 16 || clean.length === 32) && /^[A-Z2-7]+$/.test(clean);
+  }
+
   function scrapeSecret() {
     const text = document.body ? document.body.innerText || "" : "";
-    const grouped = /\b([A-Z2-7]{4}(?:[\s-]+[A-Z2-7]{4}){3,7})\b/.exec(text);
-    if (grouped) return grouped[1].replace(/[\s-]/g, "");
-    for (const input of [...document.querySelectorAll("input")].filter(visible)) {
-      const value = String(input.value || "").replace(/[\s-]/g, "");
-      if (/^[A-Z2-7]{16,32}$/.test(value)) return value;
+    const grouped =
+      /\b(?:[A-Z2-7]{4}[\s\u200b-\u200d\u2060\ufeff-]+){3,7}[A-Z2-7]{4}\b/gi.exec(text);
+    if (grouped) {
+      const secret = plainSecret(grouped[0]);
+      if (looksLikeSetupKey(secret)) return secret;
     }
+
+    // A read-only field carries the key on some variants. Reject a hidden,
+    // unlabelled value: a CSRF token can use the same alphabet.
+    for (const input of document.querySelectorAll("input,textarea")) {
+      if ((input.type || "").toLowerCase() === "password") continue;
+      const hint = `${input.name || ""} ${input.id || ""} ${
+        input.getAttribute("aria-label") || ""
+      } ${input.placeholder || ""}`;
+      const secret = plainSecret(input.value);
+      if (!looksLikeSetupKey(secret)) continue;
+      if (visible(input) || /key|secret/i.test(hint)) return secret;
+    }
+
+    // Key split into four-character nodes with no whitespace between them.
+    for (const node of document.querySelectorAll("div,span")) {
+      const children = [...node.children].filter(visible);
+      if (children.length < 4 || children.length > 8) continue;
+      const parts = children.map((child) => plainSecret(child.textContent));
+      if (!parts.every((part) => /^[A-Z2-7]{4}$/.test(part))) continue;
+      const secret = parts.join("");
+      if (looksLikeSetupKey(secret)) return secret;
+    }
+
     // Google sometimes renders the key in its own node with no separators.
-    for (const node of document.querySelectorAll("div,span,code,b,strong")) {
-      const value = String(node.innerText || "").replace(/[\s-]/g, "");
-      if (/^[A-Z2-7]{16,32}$/.test(value) && visible(node)) return value;
+    for (const node of document.querySelectorAll("div,span,code,b,strong,td")) {
+      if (node.children.length || !visible(node)) continue;
+      const secret = plainSecret(node.innerText);
+      if (looksLikeSetupKey(secret)) return secret;
     }
     return "";
   }
 
-  function keepSecret(secret) {
-    if (!secret || state.kept === secret) return;
-    state.kept = secret;
+  function keepSecret(secret, enrolled = false) {
+    if (!secret) return;
     const email = state.creds?.email || "";
-    note(`authenticator secret captured for ${email || "this identity"} (${secret.length} chars)`);
+    const first = state.kept !== secret;
+    if (first) {
+      state.kept = secret;
+      note(
+        `authenticator secret captured for ${email || "this identity"} (${secret.length} chars)`
+      );
+    }
+    // Capture is sent immediately (the secret is too valuable to lose), then a
+    // second message confirms that Google actually accepted the code. The prime
+    // waits for that confirmation before leaving the tab.
+    if (!first && (!enrolled || state.keptEnrolled === secret)) return;
+    if (enrolled) state.keptEnrolled = secret;
     try {
-      const sent = api.runtime.sendMessage({ type: "identity-totp", email, secret });
+      const sent = api.runtime.sendMessage({
+        type: "identity-totp",
+        email,
+        secret,
+        enrolled: Boolean(enrolled),
+      });
       if (sent && typeof sent.catch === "function") sent.catch(() => {});
     } catch (_) {
       // extension context gone
@@ -243,17 +296,29 @@
   }
 
   function pressNext() {
-    const direct =
-      document.querySelector("#identifierNext button") ||
-      document.querySelector("#passwordNext button") ||
-      document.querySelector("#submit button") ||
-      document.querySelector('button[jsname="LgbsSe"]');
-    if (direct && visible(direct)) {
-      direct.click();
-      return "button";
+    if (location.hostname === "accounts.google.com") {
+      const direct =
+        document.querySelector("#identifierNext button") ||
+        document.querySelector("#passwordNext button") ||
+        document.querySelector("#submit button");
+      if (direct && visible(direct)) {
+        direct.click();
+        return "button";
+      }
     }
-    const byText = clickByText(["next", "continue", "verify"], "button,[role=button]");
+    // Account pages use labelled material buttons. Prefer the label over the
+    // generic jsname, which can also belong to a "Back to previous page"
+    // control on the same screen.
+    const byText = clickByText(
+      ["next", "continue", "verify", "done", "finish", "turn on"],
+      "button,[role=button],[role=link],a"
+    );
     if (byText) return byText;
+    const generic = document.querySelector('button[jsname="LgbsSe"]');
+    if (generic && visible(generic)) {
+      generic.click();
+      return "jsname";
+    }
     const form = document.querySelector("form");
     if (form) {
       try {
@@ -298,14 +363,24 @@
     let bestScore = 0;
     for (const input of inputs) {
       const type = (input.type || "text").toLowerCase();
-      if (type === "password" || type === "email" || type === "checkbox") continue;
+      if (
+        type === "password" ||
+        type === "email" ||
+        type === "checkbox" ||
+        type === "search"
+      ) {
+        continue;
+      }
       // The setup key sits in a read-only field on the same screen as the code
       // input; never type the current code into it.
       if (input.readOnly || input.disabled) continue;
-      if (/^[A-Z2-7]{16,32}$/.test(String(input.value || "").replace(/[\s-]/g, ""))) continue;
+      // Never type the current code into the setup-key field. It can be
+      // lowercase on Google's own page, so normalise before comparing.
+      if (looksLikeSetupKey(input.value)) continue;
       const hints = `${input.getAttribute("aria-label") || ""} ${input.name || ""} ${
         input.placeholder || ""
       } ${input.id || ""}`.toLowerCase();
+      if (/search|setup key|secret key|authenticator key/.test(hints)) continue;
       let score = 0;
       if (input.autocomplete === "one-time-code") score += 6;
       if (/backup|verification code|one-time/.test(hints)) score += 5;
@@ -314,7 +389,10 @@
       if (Number(input.maxLength) > 0 && Number(input.maxLength) <= 12) score += 1;
       if (type === "tel") score += 2;
       if (type === "text" || type === "tel" || type === "number") score += 1;
-      if (score > bestScore) {
+      // A bare text box scores 1. A code field scores at least 2 (a text box
+      // with a length hint) and every real challenge scores much higher. This
+      // keeps the account page's search box out of the list.
+      if (score >= 2 && score > bestScore) {
         best = input;
         bestScore = score;
       }
@@ -501,6 +579,7 @@
         body
       ) &&
       /add authenticator app/i.test(body) &&
+      !state.otpSecret &&
       !state.settingsAuthStarted
     ) {
       act("settings-add-auth", () => {
@@ -544,13 +623,14 @@
     if (
       /authenticator app/i.test(body) &&
       /set up authenticator/i.test(body) &&
+      !state.otpSecret &&
       !state.setupStarted
     ) {
       act("setup-authenticator", () => {
         state.setupStarted = true;
         const hit = clickByText(
           ["set up authenticator"],
-          'button,[role="button"],a'
+          'button,[role="button"],[role="link"],a'
         );
         if (hit) once("setup-authenticator", `authenticator setup -> ${hit}`);
         return hit;
@@ -640,14 +720,21 @@
     // Enrollment finished: keep the secret and dismiss the confirmation.
     if (
       state.otpSecret &&
-      /(2|two)-step verification is on|you.re all set|2-step verification is turned on/i.test(body)
+      /(2|two)-step verification is on|you.re all set|2-step verification is turned on|authenticator app (?:was )?added|authenticator added/i.test(
+        body
+      )
     ) {
-      keepSecret(state.otpSecret);
+      // Tell the prime that Google accepted the code, not just that the key was
+      // scraped. The lane can then leave the tab without cutting the setup off.
+      keepSecret(state.otpSecret, true);
+      once("enrol-confirmed", "Google accepted the authenticator code");
       if (!state.enrolled) {
         act("enrol-done", () => {
-          state.enrolled = true;
-          const hit = clickByText(["done", "turn on", "finish"], "button,[role=button],a");
-          once("enrol-done", "2SV enrolled with the authenticator app");
+          const hit = clickByText(["done", "turn on", "finish"], "button,[role=button],[role=link],a");
+          if (hit) {
+            state.enrolled = true;
+            once("enrol-done", "2SV enrolled with the authenticator app");
+          }
           return hit;
         });
       }
@@ -657,9 +744,16 @@
     // 2SV enrolment with the authenticator app. Google only offers the phone
     // when the tenant policy allows SMS, so with SMS disallowed this is the
     // screen that has to be finished before the challenge can be answered.
-    const enrollPage = /scan the qr|can.t scan|setup key|enter a setup key|set up (2|two)-step|add a second step/i.test(
+    const qrPage = /scan the qr/i.test(body);
+    // These two sentences only appear once "Can't scan it?" has been opened.
+    // "enter a setup key" alone is on the QR page too and must not count here.
+    const keyPanelText = /enter your email address and this key|tap add to finish/i.test(
       body
     );
+    const enrollPage =
+      qrPage ||
+      keyPanelText ||
+      /can.t scan|enter a setup key|setup key/i.test(body);
 
     // A signed-in challenge that offers the authenticator, answered with the
     // secret captured at enrolment. Checked before enrolment so a stored secret
@@ -685,6 +779,7 @@
         return;
       }
       if (
+        location.hostname === "accounts.google.com" &&
         act("pick-challenge-auth", () =>
           clickByText(["authenticator app", "use your authenticator"], 'button,[role="button"],[role="radio"],li,[role="link"]')
         )
@@ -694,33 +789,73 @@
       // nothing clickable on this screen: let the phone/method branches below run
     }
 
-    const enrolling = body.includes("authenticator app") && enrollPage;
+    // "Add authenticator app" also appears on the 2SV settings page. Only the
+    // QR/key wizard is an enrollment screen; the settings page is handled above.
+    const enrolling =
+      /authenticator app|google authenticator/.test(body) && enrollPage;
 
     if (enrolling && !state.enrolled) {
-      if (!state.otpSecret) {
-        const secret = scrapeSecret();
-        if (secret) {
-          state.otpSecret = secret;
-          keepSecret(secret);
-        }
+      // Read on every tick, not only when state.otpSecret is empty. A non-empty
+      // result is also how the setup-key panel is recognised after "Can't scan
+      // it?"; the old code stopped looking after the first miss and then sat on
+      // the key screen until the prime timed out.
+      const freshSecret = scrapeSecret();
+      if (!state.otpSecret && freshSecret) {
+        state.otpSecret = freshSecret;
+        keepSecret(freshSecret);
       }
+      // A page reload wipes this content script's state; the lane's handoff
+      // still carries the secret it captured before the reload.
+      if (!state.otpSecret && state.creds.otp) state.otpSecret = state.creds.otp;
 
-      // The first screen is the QR itself; its visible Next button reveals the
-      // setup key. Do not try "Can't scan it?" before that button: the page
-      // contains hidden setup-key copy and a broad match clicks the container.
-      if (/scan the qr/i.test(body)) {
-        const hit = act("qr-next", () =>
-          clickByText(["next"], 'button,[role="button"]')
-        );
-        if (hit) {
-          once("qr-next", "authenticator QR -> next");
+      // The setup-key screen ("Enter your email address and this key"). The key
+      // is the product of this screen: never leave it before the key is in
+      // hand. Google verifies the TOTP on the next screen and only then turns
+      // the factor on.
+      const keyPanel = keyPanelText || Boolean(freshSecret);
+      if (keyPanel) {
+        const field = codeField();
+        if (state.otpSecret && field && visible(field) && !state.otpSubmitted) {
+          act("otp-fill", () => {
+            state.otpSubmitted = true;
+            totpNow(state.otpSecret).then((value) => {
+              if (!value) return;
+              fill(field, value);
+              note("authenticator code entered");
+              submitAfter(field, value, 1200);
+            });
+            return true;
+          });
           return;
         }
+        if (state.otpSecret) {
+          // The key has no code field beside it, so "Next" is what moves the
+          // wizard on to "Enter the code generated by your authenticator app".
+          const hit = act("key-next", () =>
+            clickByText(
+              ["next", "continue", "verify", "done", "finish"],
+              'button,[role="button"],[role="link"],a'
+            )
+          );
+          if (hit) {
+            once("key-next", "authenticator setup key -> next");
+            return;
+          }
+          return;
+        }
+        once(
+          "key-unreadable",
+          "setup key page is open but no key could be read — not advancing"
+        );
+        return;
       }
 
+      // Open the key panel before spending a Next click: Next alone can land on
+      // the code screen with no key in hand. The old order did that and the
+      // whole enrollment stalled as soon as the QR was dismissed.
       if (!state.otpSecret && /can.t scan|enter a setup key|setup key/i.test(body)) {
-        act("cant-scan", () => {
-          const hit = clickByText(
+        const hit = act("cant-scan", () => {
+          const found = clickByText(
             [
               "can't scan it",
               "cant scan it",
@@ -728,12 +863,23 @@
               "can't scan the qr code",
               "enter a setup key",
             ],
-            'button,[role="button"],a'
+            'button,[role="button"],[role="link"],a'
           );
-          if (hit) once("cant-scan", `setup key panel -> ${hit}`);
-          return hit;
+          if (found) once("cant-scan", `setup key panel -> ${found}`);
+          return found;
         });
-        return;
+        if (hit) return;
+      }
+
+      // QR screen with no key-panel link: Next is the only way on.
+      if (qrPage) {
+        const hit = act("qr-next", () =>
+          clickByText(["next"], 'button,[role="button"],[role="link"],a')
+        );
+        if (hit) {
+          once("qr-next", "authenticator QR -> next");
+          return;
+        }
       }
 
       const field = codeField();
@@ -751,7 +897,7 @@
         return;
       }
 
-      if (/scan the qr/i.test(body)) {
+      if (qrPage) {
         act("qr-next", () => pressNext());
         return;
       }
@@ -959,6 +1105,8 @@
         state.codeRequestAt = 0;
         state.otpSecret = "";
         state.otpSubmitted = false;
+        state.kept = "";
+        state.keptEnrolled = "";
         state.enrolled = false;
         state.settingsAuthStarted = false;
         state.setupStarted = false;

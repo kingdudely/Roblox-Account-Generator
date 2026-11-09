@@ -1057,7 +1057,7 @@ async function finaliseOnTab(tabId, timeout, shouldStop, log, options = {}) {
 // were hit-or-miss. A failure here is not fatal: the caller falls back to the
 // normal SSO lane with whatever Google session the prime left behind.
 async function primeGoogleSession(tabId, identity, timeout, shouldStop, storeId, log, options = {}) {
-  const { codesFor = () => [], otpFor = () => "" } = options;
+  const { codesFor = () => [], otpFor = () => "", enrolledFor = () => false } = options;
   const email = String(identity.email || "").toLowerCase();
   const initialSecret =
     (typeof otpFor === "function" ? otpFor(identity.email) : "") || identity.otp_secret || "";
@@ -1067,6 +1067,7 @@ async function primeGoogleSession(tabId, identity, timeout, shouldStop, storeId,
   let lastBody = "";
   let signedInAt = 0;
   let sent = 0;
+  let secretAt = 0;
 
   while (Date.now() < deadline) {
     if (shouldStop && shouldStop()) throw new Error("stopped");
@@ -1081,11 +1082,27 @@ async function primeGoogleSession(tabId, identity, timeout, shouldStop, storeId,
 
     const secret =
       (typeof otpFor === "function" ? otpFor(identity.email) : "") || "";
-    if (secret && secret !== initialSecret) {
-      log("prime: authenticator secret captured");
-      // The code has been filled; let Google finish the confirmation screen.
-      await sleep(2500);
-      return true;
+    if (secret && !initialSecret && !secretAt) {
+      secretAt = Date.now();
+      log("prime: authenticator secret captured — waiting for Google to accept the code");
+    }
+    if (secret && secretAt) {
+      // The key is scraped before the wizard has advanced to the code entry,
+      // let alone accepted it. Leaving the tab at that moment navigates away
+      // mid-enrolment, so wait for the content script's confirmation.
+      const enrolled =
+        typeof enrolledFor === "function" ? enrolledFor(identity.email) : false;
+      if (enrolled) {
+        log("prime: authenticator enrolled");
+        await sleep(1500);
+        return true;
+      }
+      if (Date.now() - secretAt > 20_000) {
+        log(
+          "prime: secret captured but enrollment was not confirmed — keeping the secret and continuing"
+        );
+        return true;
+      }
     }
 
     if (/^https:\/\/myaccount\.google\.com\//.test(url)) {
@@ -1122,7 +1139,12 @@ async function primeGoogleSession(tabId, identity, timeout, shouldStop, storeId,
       lastBody = body;
       // A setup screen can take longer than the landing page. Keep the 60s
       // window alive while the QR/key wizard is actually on screen.
-      if (signedInAt && /scan the qr|can.t scan|setup key|enter a setup key|add authenticator app/i.test(body)) {
+      if (
+        signedInAt &&
+        /scan the qr|can.t scan|setup key|enter a setup key|enter your email address and this key|tap add to finish|add authenticator app/i.test(
+          body
+        )
+      ) {
         signedInAt = Date.now();
       }
       if (/don.?t meet your organization|2-step verification policy/i.test(body)) {
@@ -1179,6 +1201,7 @@ export async function runIdentity(options) {
     keepTabs = false,
     onSession,
     otpFor,
+    enrolledFor,
     username = "",
     birthday = "1996-05-15",
     gender = 1,
@@ -1236,6 +1259,7 @@ export async function runIdentity(options) {
         primed = await primeGoogleSession(tabId, identity, budget, shouldStop, storeId, logFor, {
           codesFor: () => identity.codes || [],
           otpFor,
+          enrolledFor,
         });
       } catch (error) {
         if (String(error.message || error) === "stopped") throw error;

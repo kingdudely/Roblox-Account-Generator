@@ -60,6 +60,9 @@ let consoleCount = 0;
 // identity in 2SV. Kept in memory so the lane can answer a challenge in the same
 // run, before the identity object that was queued has been re-read from storage.
 const liveOtp = new Map();
+// Identities whose authenticator enrolment the content script has confirmed
+// (Google accepted the TOTP), as opposed to merely captured the setup key.
+const liveEnrolled = new Set();
 // Identities that currently have a lane open, keyed by email. The content script
 // can ask for a backup-code set mid-challenge, and the lane holds the only
 // object whose `codes` the pump reads.
@@ -1297,7 +1300,11 @@ async function runBatch(queue, preflight) {
 
       // The lane object the content script's "need codes" request resolves to.
       identity.noSecondFactor = null;
-      activeIdentities.set(String(identity.email || "").toLowerCase(), identity);
+      const identityEmail = String(identity.email || "").toLowerCase();
+      activeIdentities.set(identityEmail, identity);
+      // A confirmation belongs to one enrollment. A retry of the same address
+      // must not inherit the previous run's "already enrolled" answer.
+      liveEnrolled.delete(identityEmail);
 
       try {
         // An identity with no codes and no authenticator has no second factor at
@@ -1330,6 +1337,7 @@ async function runBatch(queue, preflight) {
             shouldStop: () => stopRequested,
             log: (text) => remember(text, "info"),
             otpFor: (email) => liveOtp.get(String(email || "").toLowerCase()) || "",
+            enrolledFor: (email) => liveEnrolled.has(String(email || "").toLowerCase()),
             username: requestedUsername,
             birthday: profile.birthday,
             gender: profile.gender,
@@ -2903,6 +2911,7 @@ function wire() {
     if (message?.type === "identity-totp" && message.secret) {
       const email = String(message.email || "").toLowerCase();
       liveOtp.set(email, message.secret);
+      if (message.enrolled && email) liveEnrolled.add(email);
       mutate((draft) => {
         let matched = false;
         const row = draft.identities.find(
@@ -2938,7 +2947,10 @@ function wire() {
           };
         }
       }).catch(() => {});
-      remember(`${email || "account"}: authenticator secret saved`, "ok");
+      remember(
+        `${email || "account"}: authenticator ${message.enrolled ? "enrolled" : "secret saved"}`,
+        "ok"
+      );
     }
     if (message?.type === "log-line" && message.line) {
       // Our own lines were appended when they happened; this is the echo.

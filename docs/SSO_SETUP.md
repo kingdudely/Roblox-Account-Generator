@@ -507,10 +507,11 @@ policy message.
 1. Clicks **I understand** on the *"Welcome to your new account"* terms
    interstitial. It has no field, so a driver that only fills inputs sits on it
    until the lane times out.
-2. Picks **Authenticator app**, opens **Can't scan it?**, scrapes the 16-character
-   setup key, computes the RFC 6238 code locally (SHA-1, 6 digits, 30 s) and
-   finishes enrollment. The secret is stored on the identity and the account as
-   `otp_secret` and exported with them.
+2. Picks **Authenticator app**, opens **Can't scan it?**, scrapes the 16- or
+   32-character setup key (Google renders it in either case, in groups of four),
+   computes the RFC 6238 code locally (SHA-1, 6 digits, 30 s), clicks **Next**
+   through the key panel and finishes enrollment. The secret is stored on the
+   identity and the account as `otp_secret` and exported with them.
 3. If a challenge offers **Enter one of your backup codes**, it uses the code the
    Admin API minted first; an enrolled authenticator secret is the fallback.
 
