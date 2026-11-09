@@ -38,6 +38,8 @@
     otpSecret: "",
     otpSubmitted: false,
     enrolled: false,
+    settingsAuthStarted: false,
+    setupStarted: false,
     reported: new Set(),
   };
 
@@ -498,9 +500,11 @@
       /to turn on 2-step verification, you must first add a second step|second steps/i.test(
         body
       ) &&
-      /add authenticator app/i.test(body)
+      /add authenticator app/i.test(body) &&
+      !state.settingsAuthStarted
     ) {
       act("settings-add-auth", () => {
+        state.settingsAuthStarted = true;
         const labelOf = (el) =>
           `${el.getAttribute("aria-label") || ""} ${el.innerText || ""}`
             .replace(/\s+/g, " ")
@@ -537,8 +541,13 @@
     // The Authenticator app landing page: Google shows a "Set up authenticator"
     // button before it reveals the QR/setup key. Without this click the wizard
     // never starts and the prime gives up with no secret.
-    if (/authenticator app/i.test(body) && /set up authenticator/i.test(body)) {
+    if (
+      /authenticator app/i.test(body) &&
+      /set up authenticator/i.test(body) &&
+      !state.setupStarted
+    ) {
       act("setup-authenticator", () => {
+        state.setupStarted = true;
         const hit = clickByText(
           ["set up authenticator"],
           'button,[role="button"],a'
@@ -696,16 +705,31 @@
         }
       }
 
-      if (!state.otpSecret && /can.t scan|setup key|enter a setup key/i.test(body)) {
+      // The first screen is the QR itself; its visible Next button reveals the
+      // setup key. Do not try "Can't scan it?" before that button: the page
+      // contains hidden setup-key copy and a broad match clicks the container.
+      if (/scan the qr/i.test(body)) {
+        const hit = act("qr-next", () =>
+          clickByText(["next"], 'button,[role="button"]')
+        );
+        if (hit) {
+          once("qr-next", "authenticator QR -> next");
+          return;
+        }
+      }
+
+      if (!state.otpSecret && /can.t scan|enter a setup key|setup key/i.test(body)) {
         act("cant-scan", () => {
-          const hit = clickByText([
-            "can't scan it",
-            "cant scan it",
-            "can\u2019t scan it",
-            "can't scan the qr code",
-            "enter a setup key",
-            "setup key",
-          ]);
+          const hit = clickByText(
+            [
+              "can't scan it",
+              "cant scan it",
+              "can\u2019t scan it",
+              "can't scan the qr code",
+              "enter a setup key",
+            ],
+            'button,[role="button"],a'
+          );
           if (hit) once("cant-scan", `setup key panel -> ${hit}`);
           return hit;
         });
@@ -848,7 +872,10 @@
       return;
     }
 
-    if (/verify your device|scan the qr|qr code|scan this/i.test(body)) {
+    if (
+      /verify your device|scan the qr|qr code|scan this/i.test(body) &&
+      !/google authenticator|authenticator app|set up authenticator/i.test(body)
+    ) {
       once("phone-gate", "phone gate detected — open Setup and press Scan Google tab");
       return;
     }
@@ -933,6 +960,8 @@
         state.otpSecret = "";
         state.otpSubmitted = false;
         state.enrolled = false;
+        state.settingsAuthStarted = false;
+        state.setupStarted = false;
         state.kept = "";
         state.reported = new Set();
         state.lastAction = "";

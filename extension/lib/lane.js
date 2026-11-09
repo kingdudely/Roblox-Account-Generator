@@ -741,6 +741,11 @@ async function waitForGoogle(tabId, timeout, shouldStop, log, options = {}) {
     if (url.includes("accounts.google.com") && !(ignorePrime && url.includes("myaccount.google.com"))) {
       return tab;
     }
+    // With a live Google session the SSO init can skip Google entirely and land
+    // straight on Roblox. That is a success, not a failed Google redirect.
+    if (/roblox\.com\/(sso-complete|not-approved|home)/.test(url)) {
+      return tab;
+    }
     if (url && url !== last) {
       last = url;
       log(`sso init: ${url.slice(0, 90)}`);
@@ -1056,7 +1061,7 @@ async function primeGoogleSession(tabId, identity, timeout, shouldStop, storeId,
   const email = String(identity.email || "").toLowerCase();
   const initialSecret =
     (typeof otpFor === "function" ? otpFor(identity.email) : "") || identity.otp_secret || "";
-  const deadline = Date.now() + Math.min(timeout, 90_000);
+  const deadline = Date.now() + Math.min(timeout, 120_000);
 
   let lastUrl = "";
   let lastBody = "";
