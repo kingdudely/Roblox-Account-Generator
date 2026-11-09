@@ -1673,6 +1673,31 @@ async function runBatch(queue, preflight) {
               );
             }
           }
+          // Confirm the identity actually finished 2SV enrolment. The key can
+          // report it but cannot toggle it; a false here means the authenticator
+          // screen did not complete, even though backup codes still work.
+          try {
+            const status = await admin.twoStepStatus(key, identity.email);
+            await mutate((draft) => {
+              const row = draft.identities.find((entry) => entry.id === identity.id);
+              if (row) row.twofa_enrolled = Boolean(status.enrolled);
+            });
+            if (!status.enrolled) {
+              await remember(
+                `${identity.email}: 2SV not enrolled (enforced=${status.enforced}) — the authenticator screen may not have completed; backup codes still work`,
+                "warn"
+              );
+            }
+          } catch (error) {
+            if (error.status !== 404) {
+              await remember(
+                `${identity.email}: 2SV status check failed — ${String(
+                  error.message || error
+                ).slice(0, 120)}`,
+                "info"
+              );
+            }
+          }
           // The Roblox account exists and the cookie is saved. The Google user
           // has done its job; queue it for deletion so the seat comes back.
           if (settings.deleteGoogleAfterSuccess !== false) {
@@ -1768,7 +1793,7 @@ async function finaliseAccount(account) {
       });
     }
 
-    const result = await retryFinalise(tab.id, 60, () => false, (text) =>
+    const result = await retryFinalise(tab.id, 120, () => false, (text) =>
       remember(text, "info"), {
         username: requestedUsername,
         birthday: profile.birthday,
@@ -2722,16 +2747,8 @@ function renderAutoSetup() {
   if (start) start.disabled = autoSetup.running;
   const stop = $("auto-stop");
   if (stop) stop.disabled = !autoSetup.running;
-  const open = $("auto-open");
-  if (open) open.disabled = !autoSetup.tabId;
 
-  const hasTab = Boolean(autoSetup.tabId);
   const hasProject = Boolean(autoSetup.projectId);
-  const fallback = $("auto-fallback");
-  if (fallback) {
-    fallback.hidden =
-      autoSetup.phase === "done" || (!hasTab && !hasProject);
-  }
   const skip = $("auto-continue");
   if (skip) {
     const late =
@@ -2745,6 +2762,8 @@ function renderAutoSetup() {
   }
   const credentials = $("auto-credentials");
   if (credentials) credentials.disabled = !hasProject;
+  const keys = $("auto-keys");
+  if (keys) keys.disabled = !autoSetup.tabId;
 
   const phone = $("auto-phone");
   if (phone) phone.hidden = !autoSetup.phoneShown;
@@ -3261,6 +3280,27 @@ async function handleAutoClient(message) {
       .catch(() => {});
   }
   renderAutoSetup();
+  await focusRunnerTab();
+  switchTab("keys");
+}
+
+async function showManualDuckDns() {
+  await setSetup((draft) => {
+    draft.mode = "manual";
+    draft.open.dns = true;
+  });
+  switchTab("setup");
+  openStep("dns", true);
+}
+
+async function showAutomaticSetup() {
+  await setSetup((draft) => {
+    draft.mode = "auto";
+  });
+  switchTab("setup");
+  document
+    .getElementById("setup-auto-view")
+    ?.scrollIntoView({ block: "start", behavior: "smooth" });
 }
 
 function wireAutoSetup() {
@@ -3314,10 +3354,17 @@ function wireAutoSetup() {
     );
   });
   $("auto-stop")?.addEventListener("click", () => stopAutoSetup("stopped by you"));
-  $("auto-open")?.addEventListener("click", () => {
-    focusAutoTab().catch(() => {});
-  });
   $("auto-keys")?.addEventListener("click", () => switchTab("keys"));
+  document.querySelectorAll(".jump-manual-dns").forEach((button) => {
+    button.addEventListener("click", () => {
+      showManualDuckDns().catch(() => {});
+    });
+  });
+  document.querySelectorAll(".back-to-auto").forEach((button) => {
+    button.addEventListener("click", () => {
+      showAutomaticSetup().catch(() => {});
+    });
+  });
   $("auto-continue")?.addEventListener("click", () => {
     continueToKey().catch((error) =>
       remember(`automatic setup: ${error.message || error}`, "error")
@@ -3425,6 +3472,40 @@ function wireSetup() {
 
 // ---------------------------------------------------------------------- events
 
+function wireSecretToggles() {
+  const eye =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12Z"/>' +
+    '<circle cx="12" cy="12" r="3"/></svg>';
+
+  for (const input of document.querySelectorAll('input[type="password"]')) {
+    if (input.dataset.secretWrapped) continue;
+    const wrap = document.createElement("span");
+    wrap.className = "secret-wrap";
+    input.parentNode.insertBefore(wrap, input);
+    wrap.append(input);
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "secret-eye";
+    button.setAttribute("aria-label", "Show value");
+    button.title = "Show value";
+    button.innerHTML = eye;
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const showing = input.type === "text";
+      input.type = showing ? "password" : "text";
+      button.classList.toggle("revealed", !showing);
+      button.setAttribute("aria-label", showing ? "Show value" : "Hide value");
+      button.title = showing ? "Show value" : "Hide value";
+    });
+    wrap.append(button);
+    input.dataset.secretWrapped = "1";
+  }
+}
+
 function wire() {
   document.querySelectorAll(".tab").forEach((tab) => {
     tab.addEventListener("click", () => {
@@ -3437,6 +3518,7 @@ function wire() {
 
   wireSetup();
   wireAutoSetup();
+  wireSecretToggles();
 
   $("start").addEventListener("click", () => start({ preflight: false }));
   $("preflight").addEventListener("click", () => start({ preflight: true }));

@@ -233,59 +233,72 @@
                 <span class="hint" id="auto-status">idle</span>
               </div>
               <p class="note">
-                Only three things are required: a recovery email, a DuckDNS token
-                and a DuckDNS subdomain. The business and admin fields are
-                optional and generated if you leave them blank. The flow picks an
-                <b>Internal</b> OAuth app when Google offers it, so the key does
-                not expire after seven days.
+                Fill the fields below; the extension opens Google's Cloud Identity
+                signup, fills the forms, verifies the domain through DuckDNS, and
+                pauses only for the phone gate (and a captcha if Google asks). It
+                prefers an <b>Internal</b> OAuth app so the key does not expire
+                after seven days.
               </p>
-              <details class="auto-help" open>
-                <summary>
-                  <span>How to get the DuckDNS token and subdomain</span>
+
+              <div class="helper">
+                <div class="helper-head">
+                  <h3>DuckDNS account</h3>
                   <span class="hint">required</span>
-                </summary>
-                <ol>
-                  <li>Open DuckDNS and sign in with Google, GitHub, Reddit or Twitter.</li>
+                </div>
+                <ol class="step-actions">
                   <li>
-                    Add a unique subdomain, e.g. <span class="mono">rac-novaharbor</span>.
-                    One DuckDNS account holds up to five.
+                    <p>
+                      Sign in at DuckDNS with Google, GitHub, Reddit or Twitter.
+                      The first sign-in creates the account.
+                    </p>
+                    <div class="substep-actions">
+                      <button class="btn tiny link-out" data-href="https://www.duckdns.org/domains">Open DuckDNS</button>
+                      <button class="btn tiny ghost jump-manual-dns">How to make a DuckDNS account</button>
+                    </div>
                   </li>
                   <li>
-                    Copy the account token shown at the top of the domains page.
-                    One token covers every subdomain in that account.
+                    <p>
+                      Add a unique subdomain, e.g.
+                      <span class="mono">rac-novaharbor</span>. One DuckDNS
+                      account holds up to five.
+                    </p>
                   </li>
                   <li>
-                    Paste the token and subdomain below. The extension writes the
-                    <span class="mono">google-site-verification</span> TXT record
-                    for you; you do not need to touch DNS.
+                    <p>
+                      Copy the account token shown at the top of the domains page.
+                      One token covers every subdomain in that account.
+                    </p>
+                  </li>
+                  <li>
+                    <p>
+                      Paste the token and subdomain below. The extension writes the
+                      <span class="mono">google-site-verification</span> TXT record
+                      for you; you do not need to touch DNS.
+                    </p>
                   </li>
                 </ol>
-                <div class="buttons">
-                  <button class="btn tiny link-out" data-href="https://www.duckdns.org/domains">Open DuckDNS</button>
-                </div>
-              </details>
-
-              <div class="controls">
-                <label class="field">
-                  <span>Recovery email</span>
-                  <input id="auto-recovery" type="email" placeholder="you@gmail.com" />
-                </label>
-                <label class="field">
-                  <span>DuckDNS token</span>
-                  <input id="auto-token" type="password" autocomplete="off" placeholder="account token" />
-                </label>
-                <label class="field">
-                  <span>DuckDNS subdomain</span>
-                  <input id="auto-sub" placeholder="farm" />
-                  <button type="button" class="random-link" data-random="subdomain">suggest</button>
-                </label>
               </div>
 
-              <details class="auto-optional">
-                <summary>
-                  <span>Optional: business name, admin username, admin password</span>
-                  <span class="hint">generated if blank</span>
-                </summary>
+              <div class="helper">
+                <div class="helper-head">
+                  <h3>Tenant details</h3>
+                </div>
+                <div class="controls">
+                  <label class="field">
+                    <span>Recovery email</span>
+                    <input id="auto-recovery" type="email" placeholder="you@gmail.com" />
+                  </label>
+                  <label class="field">
+                    <span>DuckDNS token</span>
+                    <input id="auto-token" type="password" autocomplete="off" placeholder="account token" />
+                  </label>
+                  <label class="field">
+                    <span>DuckDNS subdomain</span>
+                    <input id="auto-sub" placeholder="farm" />
+                    <button type="button" class="random-link" data-random="subdomain">suggest</button>
+                  </label>
+                </div>
+                <div class="auto-divider"></div>
                 <div class="controls">
                   <label class="field">
                     <span>Business name</span>
@@ -299,40 +312,28 @@
                   </label>
                   <label class="field">
                     <span>Admin password</span>
-                    <input id="auto-password" type="text" autocomplete="off" />
+                    <input id="auto-password" type="password" autocomplete="off" />
                     <button type="button" class="random-link" data-random="adminPassword">random</button>
                   </label>
                 </div>
-                <p class="note">
-                  Leave any of these blank and the extension generates a value.
-                  The admin password is saved on the key row; if it is ever lost,
-                  <b>Recover admin</b> resets it and mints fresh backup codes with
-                  the key.
-                </p>
-              </details>
+              </div>
 
               <div class="buttons">
                 <button id="auto-start" class="btn primary">Start automatic setup</button>
                 <button id="auto-stop" class="btn danger" disabled>Stop</button>
-                <button id="auto-open" class="btn ghost" disabled>Show Google signup tab</button>
-                <button id="auto-keys" class="btn ghost">Go to Keys</button>
               </div>
 
-              <details class="auto-fallback" id="auto-fallback" hidden>
-                <summary>
+              <div class="auto-fallback-row" id="auto-fallback">
+                <div class="fallback-head">
                   <span>Manual fallback</span>
                   <span class="hint">only if the automatic flow stalls</span>
-                </summary>
-                <p class="note">
-                  The automatic flow normally creates and authorizes the key
-                  itself. Use these only if Google's console page changed and it
-                  stopped short. For a client JSON, use <b>Go to Keys</b>.
-                </p>
+                </div>
                 <div class="buttons">
                   <button id="auto-continue" class="btn tiny ghost" disabled>Skip to Cloud project</button>
                   <button id="auto-credentials" class="btn tiny ghost" disabled>Open Google credentials</button>
+                  <button id="auto-keys" class="btn tiny ghost" disabled>Go to Keys</button>
                 </div>
-              </details>
+              </div>
 
               <div class="auto-phone" id="auto-phone" hidden>
                 <div class="card-head">
@@ -409,7 +410,7 @@
               <div class="step-body">
                 <ol class="step-actions">
                   <li>
-                    <p>Sign in at DuckDNS and add a subdomain.</p>
+                    <p>Sign in at DuckDNS (the first sign-in creates the account) and add a subdomain.</p>
                     <div class="substep-actions">
                       <button class="btn tiny link-out" data-href="https://www.duckdns.org">Go to DuckDNS</button>
                     </div>
@@ -442,6 +443,13 @@
                     </div>
                   </li>
                 </ol>
+                <p class="note">
+                  Doing this from the Automatic tab? The extension can create the
+                  tenant, verify the domain and build the key for you.
+                </p>
+                <div class="substep-actions">
+                  <button class="btn tiny ghost back-to-auto">Back to Automatic setup</button>
+                </div>
               </div>
             </section>
 

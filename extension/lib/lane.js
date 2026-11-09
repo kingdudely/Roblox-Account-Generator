@@ -66,6 +66,14 @@ async function getTab(tabId) {
   }
 }
 
+async function reloadTab(tabId) {
+  try {
+    await api.tabs.reload(tabId);
+  } catch (_) {
+    // tab gone or reload refused
+  }
+}
+
 // A lane's surface. "tab" is a plain background tab: nothing on screen, and
 // content/awake.js (MAIN world) makes the page believe it is selected and gives
 // it a frame clock that does not depend on being painted. "window" is the
@@ -946,6 +954,11 @@ async function finaliseOnTab(tabId, timeout, shouldStop, log, options = {}) {
   let homeWaits = 0;
   let ssoClicks = 0;
   let lastUrl = "";
+  let stuck = 0;
+  let reloads = 0;
+  let nextClickedAt = 0;
+  let ssoSince = 0;
+  let ssoReloads = 0;
 
   while (Date.now() < deadline) {
     if (shouldStop && shouldStop()) throw new Error("stopped");
@@ -955,6 +968,10 @@ async function finaliseOnTab(tabId, timeout, shouldStop, log, options = {}) {
     const url = tab.url || "";
     if (url !== lastUrl) {
       lastUrl = url;
+      if (/sso-complete/.test(url)) ssoSince = Date.now();
+      else ssoSince = 0;
+      if (!/not-approved/.test(url)) stuck = 0;
+      nextClickedAt = 0;
       log(`finalise page ${shortUrl(url)}`);
     }
 
@@ -971,7 +988,7 @@ async function finaliseOnTab(tabId, timeout, shouldStop, log, options = {}) {
           [birthday, username, options.gender || 1, options.acceptTerms !== false],
           "MAIN"
         ),
-        45_000,
+        25_000,
         "ui finalise"
       ).catch((error) => {
         log(`ui finalise step failed: ${error.message || error}`);
@@ -1004,7 +1021,42 @@ async function finaliseOnTab(tabId, timeout, shouldStop, log, options = {}) {
             log(diag);
           }
         }
+        stuck = step.next ? 0 : stuck + 1;
+        if (step.next) {
+          if (!nextClickedAt) nextClickedAt = Date.now();
+        } else {
+          nextClickedAt = 0;
+        }
+      } else {
+        stuck += 1;
+        nextClickedAt = 0;
       }
+
+      // A reload clears a frozen React tree / stale DOM. The form is
+      // idempotent, so re-running it after the reload is safe; if the account
+      // actually finished, /not-approved redirects to /home and the loop
+      // verifies the session there.
+      if (stuck >= 2 && reloads < 3) {
+        reloads += 1;
+        stuck = 0;
+        nextClickedAt = 0;
+        log(`ui finalise: reloading /not-approved (${reloads}/3)`);
+        await reloadTab(tabId);
+        await sleep(2500);
+        continue;
+      }
+
+      // Continue was clicked but the page did not move. Give it 8 seconds,
+      // then reload rather than clicking a dead button forever.
+      if (nextClickedAt && Date.now() - nextClickedAt > 8000 && reloads < 3) {
+        reloads += 1;
+        nextClickedAt = 0;
+        log(`ui finalise: still on /not-approved after submit — reloading (${reloads}/3)`);
+        await reloadTab(tabId);
+        await sleep(2500);
+        continue;
+      }
+
       await sleep(2200);
       continue;
     }
@@ -1034,6 +1086,15 @@ async function finaliseOnTab(tabId, timeout, shouldStop, log, options = {}) {
           ssoClicks += 1;
           log(`sso-complete: clicked ${hit}`);
         }
+      }
+      if (!ssoSince) ssoSince = Date.now();
+      if (Date.now() - ssoSince > 12_000 && ssoReloads < 2) {
+        ssoReloads += 1;
+        ssoSince = Date.now();
+        log(`sso-complete stuck — reloading (${ssoReloads}/2)`);
+        await reloadTab(tabId);
+        await sleep(2500);
+        continue;
       }
       await sleep(1500);
       continue;

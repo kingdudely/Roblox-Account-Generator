@@ -63,7 +63,7 @@ The runner opens on install. If it does not, click the toolbar icon and choose
      the run resumes when Google lets the page through. A captcha is handled the
      same way. If a console page changes under it, the tab logs where it stopped;
      use **Go to Keys** to finish the key manually. The Setup tab also explains
-     how to get the DuckDNS token and subdomain; the optional fields have
+     how to get the DuckDNS token and subdomain; the business/admin fields have
      **random** buttons.
    The key row has **Admin** / **Recover admin** (show or reset the tenant admin
    password and mint fresh backup codes using the key) and **JSON** (download the
@@ -78,7 +78,10 @@ The runner opens on install. If it does not, click the toolbar icon and choose
    `backup_codes:`. The run accepts the new-account terms interstitial, enrols the
    authenticator app (secret saved as `otp_secret`), then finalises the Roblox
    account by driving `www.roblox.com/not-approved` itself: I Agree, username,
-   birthday, Continue — and only closes the tab once the URL is `/home`.
+   birthday, Continue — and only closes the tab once the URL is `/home`. If the
+   page freezes, it reloads and retries a few times. After a successful signup it
+   also checks the identity's Google 2SV status and warns if enrolment did not
+   finish.
 4. **Settings** — choose whether Roblox keeps its generated username or the run
    sends one from the local generator, set the birthday and gender written at
    finalise (tick **random** under either to roll a fresh value per identity),
