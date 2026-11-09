@@ -438,6 +438,7 @@ summary h2 {
 
 /* Recessed wells. The dark inner shadow is what sells the depth. */
 input[type="text"],
+input[type="email"],
 input[type="number"],
 input[type="password"],
 input[type="date"],
@@ -864,8 +865,11 @@ input[type="checkbox"]:focus-visible {
 
 .keyrow .actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 5px;
   flex-shrink: 0;
+  max-width: 60%;
 }
 
 .dot {
@@ -1956,4 +1960,62 @@ textarea::placeholder {
   .auto-phone-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* Optional auto-setup fields and the DuckDNS help block. */
+.auto-help,
+.auto-optional {
+  margin-top: 10px;
+  border-top: 1px solid #3a2c35;
+  padding-top: 9px;
+}
+
+.auto-help summary,
+.auto-optional summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  user-select: none;
+}
+
+.auto-help[open] summary,
+.auto-optional[open] summary {
+  margin-bottom: 7px;
+}
+
+.auto-help ol {
+  margin: 0 0 9px 18px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.auto-help li {
+  margin-bottom: 4px;
+}
+
+.auto-optional .controls {
+  margin: 8px 0 6px;
+}
+
+.random-link {
+  align-self: flex-start;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-decoration: underline dotted;
+  cursor: pointer;
+}
+
+.random-link:hover {
+  color: #e95420;
 }

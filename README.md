@@ -54,15 +54,20 @@ The runner opens on install. If it does not, click the toolbar icon and choose
    - **Manual** — the five-step guide. The checklist turns green as each step is
      proven. The DuckDNS card writes the `google-site-verification` TXT record
      for you, and the Phone gate card reads the admin signup QR.
-   - **Automatic** — opens the Cloud Identity signup, fills the business,
-     contact, domain and admin forms, writes the DuckDNS TXT record, verifies the
-     domain, activates Cloud Identity Free, enrols the admin authenticator, and
-     drives the Cloud console. It pauses at the phone gate: the QR image and any
-     decoded number/message are shown in the Setup tab, the setup tab is brought
-     forward, and the run resumes when Google lets the page through. A captcha is
-     handled the same way. If a console page changes under it, the automatic tab
-     logs where it stopped and offers a JSON paste box so you can finish the key
-     without leaving the runner.
+   - **Automatic** — needs only a recovery email, a DuckDNS token and a DuckDNS
+     subdomain. It opens the Cloud Identity signup, generates the business name
+     and admin credentials (or uses the optional fields), writes the DuckDNS TXT
+     record, verifies the domain, activates Cloud Identity Free, enrols the admin
+     authenticator, and drives the Cloud console. It pauses at the phone gate:
+     the QR image and any decoded number/message are shown in the Setup tab, and
+     the run resumes when Google lets the page through. A captcha is handled the
+     same way. If a console page changes under it, the tab logs where it stopped
+     and offers a JSON paste box so you can finish the key without leaving the
+     runner. The Setup tab also explains how to get the DuckDNS token and
+     subdomain; the optional fields have **random** buttons.
+   The key row has **Admin** / **Recover admin** (show or reset the tenant admin
+   password and mint fresh backup codes using the key) and **JSON** (download the
+   key so it is backed up outside extension storage).
    Set tenant 2SV **Enforcement** to **On** with **Methods** = *Any except
    verification codes via text, phone call*: enforcement off makes Google ask for
    a phone number on every fresh account, and a method list that allows nothing

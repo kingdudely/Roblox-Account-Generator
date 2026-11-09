@@ -327,6 +327,20 @@ export async function deleteUser(key, email) {
   }
 }
 
+// Admin recovery: the key can set a new password without knowing the old one.
+// It is the management credential of last resort when the original admin
+// password is forgotten.
+export async function setPassword(key, email, password) {
+  const data = await call(key, `/users/${encodeURIComponent(email)}`, {
+    method: "PATCH",
+    body: { password, changePasswordAtNextLogin: false },
+  });
+  return {
+    email: data?.primaryEmail || email,
+    updated: Boolean(data),
+  };
+}
+
 export async function domainStatus(key, domain) {
   const data = await call(key, "/customer/my_customer/domains");
   const list = data?.domains || [];

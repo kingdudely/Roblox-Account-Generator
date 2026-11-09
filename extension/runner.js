@@ -322,6 +322,9 @@ function renderKeys() {
         // SCOPES (the audit and policy reads). The old refresh token keeps
         // working if this is dismissed.
         actionButton("Re-consent", () => authorizeKey(key.id), "ghost"),
+        actionButton("Admin", () => showAdmin(key.id), "ghost"),
+        actionButton("Recover admin", () => recoverAdmin(key.id), "ghost"),
+        actionButton("JSON", () => downloadKeyJson(key.id), "ghost"),
         actionButton("Delete users", () => deleteKeyUsers(key.id), "danger")
       );
     }
@@ -723,6 +726,138 @@ async function authorizeKey(id, options = {}) {
   } catch (error) {
     await remember(`${key.label}: ${error.message || error}`, "error");
   }
+}
+
+function adminEmailFor(key) {
+  return (
+    key.admin ||
+    key.admin_email ||
+    (key.domain ? `admin@${key.domain}` : "") ||
+    state.setup?.auto?.adminEmail ||
+    state.totp?.email ||
+    ""
+  );
+}
+
+async function showAdmin(id) {
+  const key = state.keys.find((entry) => entry.id === id);
+  if (!key) return;
+  const email = adminEmailFor(key);
+  if (!email) {
+    await remember(`${key.label}: no admin email known — use Recover admin`, "warn");
+    return;
+  }
+  const password = key.admin_password || "";
+  if (!password) {
+    prompt(`Admin email for ${key.label}`, email);
+    await remember(`${key.label}: no saved admin password — use Recover admin`, "warn");
+    return;
+  }
+  prompt(`Admin email for ${key.label}`, email);
+  prompt(`Saved admin password for ${email}`, password);
+  const codes = Array.isArray(key.admin_backup_codes) ? key.admin_backup_codes : [];
+  if (codes.length) {
+    prompt(`Saved backup codes for ${email}`, codes.join("\n"));
+  }
+}
+
+async function recoverAdmin(id) {
+  const key = state.keys.find((entry) => entry.id === id);
+  if (!key) return;
+  const email = prompt("Admin email to recover", adminEmailFor(key));
+  if (!email) return;
+  const target = email.trim().toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(target)) {
+    await remember(`admin recovery: not an email address: ${target}`, "error");
+    return;
+  }
+
+  const ok = confirm(
+    `Reset the password for ${target} and mint new backup codes with "${key.label}"?\n\n` +
+      "The old password stops working immediately. The key needs " +
+      "admin.directory.user and admin.directory.user.security."
+  );
+  if (!ok) return;
+
+  const password = makeAdminPassword();
+  try {
+    await admin.setPassword(key, target, password);
+    const codes = await admin.mintCodes(key, target);
+    await mutate((draft) => {
+      const row = draft.keys.find((entry) => entry.id === id);
+      if (row) {
+        row.admin = target;
+        row.admin_email = target;
+        row.admin_password = password;
+        row.admin_recovery_at = new Date().toISOString();
+        row.admin_backup_codes = codes;
+      }
+      if (draft.setup?.auto) {
+        draft.setup.auto.adminEmail = target;
+        draft.setup.auto.adminPassword = password;
+      }
+    });
+    autoDraft = null;
+    await refresh();
+    await remember(
+      `${target}: admin password reset and ${codes.length} backup code(s) minted`,
+      "ok"
+    );
+    prompt(`New password for ${target} — copy it now`, password);
+    if (codes.length) {
+      prompt(`Backup codes for ${target} — copy them now`, codes.join("\n"));
+    }
+  } catch (error) {
+    const text = String(error.message || error);
+    const hint = /403|insufficient|scope|permission|forbidden/i.test(text)
+      ? " — re-consent the key so it has admin.directory.user and admin.directory.user.security"
+      : "";
+    await remember(`${key.label}: admin recovery failed — ${text}${hint}`, "error");
+  }
+}
+
+function keyJsonText(key) {
+  const base = {
+    domain: key.domain || "",
+    admin: key.admin || key.admin_email || adminEmailFor(key) || "",
+    token_uri: key.token_uri || "https://oauth2.googleapis.com/token",
+    scopes: key.scopes || [],
+  };
+  if (key.kind === "service_account") {
+    return JSON.stringify(
+      {
+        type: "service_account",
+        project_id: key.project_id || "",
+        private_key: key.private_key || "",
+        client_email: key.client_email || "",
+        client_id: key.client_id || "",
+        ...base,
+      },
+      null,
+      2
+    );
+  }
+  return JSON.stringify(
+    {
+      client_id: key.client_id || "",
+      client_secret: key.client_secret || "",
+      refresh_token: key.refresh_token || "",
+      ...base,
+    },
+    null,
+    2
+  );
+}
+
+async function downloadKeyJson(id) {
+  const key = state.keys.find((entry) => entry.id === id);
+  if (!key) return;
+  const name = String(key.domain || key.label || "key").replace(
+    /[^a-z0-9._-]+/gi,
+    "_"
+  );
+  await saveTextFile(`${name}-key.json`, keyJsonText(key), true);
+  await remember(`${key.label}: key JSON downloaded`, "ok");
 }
 
 async function checkKey(id) {
@@ -2544,6 +2679,15 @@ function autoStatus(text) {
   setText("auto-status", text);
 }
 
+function randomSubdomain() {
+  const base = makeBusinessName()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  const suffix = 100 + Math.floor(Math.random() * 900);
+  return `rac-${base}-${suffix}`.slice(0, 63).replace(/-+$/g, "");
+}
+
 function autoProfile() {
   if (autoSetup.profile) return autoSetup.profile;
   const values = autoValues();
@@ -2697,9 +2841,11 @@ async function startAutoSetup() {
 
   const values = readAutoFields();
   const token = values.token || state.duckdns?.token || "";
-  const subdomain = String(values.subdomain || state.duckdns?.subdomain || "")
+  const rawSubdomain = String(values.subdomain || state.duckdns?.subdomain || "")
+    .trim()
     .toLowerCase()
-    .replace(/[^a-z0-9-]/g, "");
+    .replace(/\.duckdns\.org$/, "");
+  const subdomain = rawSubdomain.replace(/[^a-z0-9-]/g, "");
   const domain = fullDomain(subdomain);
 
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(values.recoveryEmail)) {
@@ -2714,26 +2860,33 @@ async function startAutoSetup() {
     await remember("automatic setup needs a DuckDNS subdomain", "error");
     return;
   }
-  if (!values.adminPassword || values.adminPassword.length < 8) {
-    await remember("automatic setup needs an admin password of at least 8 characters", "error");
-    return;
-  }
-  if (!/^[a-z0-9._-]{1,64}$/i.test(values.adminUser || "")) {
-    await remember("automatic setup needs a valid admin username", "error");
-    return;
-  }
+
+  // Everything below this line is optional. A blank field is generated, not
+  // rejected: the admin password is saved, and Recover admin can replace it
+  // later with the key if it is lost.
+  const person = makePerson();
+  const businessName = values.businessName || makeBusinessName();
+  const firstName = values.firstName || person.first;
+  const lastName = values.lastName || person.last;
+  const adminUser =
+    String(values.adminUser || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]/g, "") || "admin";
+  const adminPassword = values.adminPassword || makeAdminPassword();
 
   const profile = {
     ...values,
-    businessName: values.businessName || makeBusinessName(),
-    firstName: values.firstName || "Alex",
-    lastName: values.lastName || "Morgan",
-    adminUser: values.adminUser || "admin",
+    businessName,
+    firstName,
+    lastName,
+    adminUser,
+    adminPassword,
     token,
     subdomain,
     domain,
     projectName: values.projectName || `${subdomain}-rac`,
-    adminEmail: `${values.adminUser || "admin"}@${domain}`,
+    adminEmail: `${adminUser}@${domain}`,
     region: "United States",
   };
 
@@ -3048,6 +3201,9 @@ async function addAutoKey(clientId, clientSecret) {
       kind: "oauth_client",
       label: profile.domain || "auto setup",
       domain: profile.domain || "",
+      admin: profile.adminEmail || null,
+      admin_email: profile.adminEmail || null,
+      admin_password: profile.adminPassword || null,
       client_id: clientId,
       client_secret: clientSecret,
       refresh_token: null,
@@ -3133,6 +3289,31 @@ function wireAutoSetup() {
     });
     el.addEventListener("change", () => {
       persistAutoValues(readAutoFields()).catch(() => {});
+    });
+  }
+
+  for (const button of document.querySelectorAll("[data-random]")) {
+    button.addEventListener("click", async (event) => {
+      event.preventDefault();
+      const which = button.dataset.random;
+      const values = readAutoFields();
+      if (which === "businessName") values.businessName = makeBusinessName();
+      if (which === "adminUser") {
+        values.adminUser = `admin${1000 + Math.floor(Math.random() * 9000)}`;
+      }
+      if (which === "adminPassword") values.adminPassword = makeAdminPassword();
+      if (which === "subdomain") values.subdomain = randomSubdomain();
+      autoDraft = values;
+      const fields = {
+        businessName: "auto-business",
+        adminUser: "auto-admin",
+        adminPassword: "auto-password",
+        subdomain: "auto-sub",
+      };
+      const input = $(fields[which] || "");
+      if (input) input.value = values[which] || "";
+      renderAutoSetup();
+      await persistAutoValues(values);
     });
   }
 

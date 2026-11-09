@@ -233,28 +233,16 @@
                 <span class="hint" id="auto-status">idle</span>
               </div>
               <p class="note">
-                The extension opens Google's Cloud Identity signup, fills the forms,
-                verifies the domain through DuckDNS, and pauses only for the phone
-                gate (and a captcha if Google asks). The setup tab is brought
-                forward at that point; scan the QR or send the SMS, then the run
-                continues by itself.
+                Only three things are required: a recovery email, a DuckDNS token
+                and a DuckDNS subdomain. The business and admin fields are
+                optional and generated if you leave them blank. The flow picks an
+                <b>Internal</b> OAuth app when Google offers it, so the key does
+                not expire after seven days.
               </p>
               <div class="controls">
                 <label class="field">
                   <span>Recovery email</span>
                   <input id="auto-recovery" type="email" placeholder="you@gmail.com" />
-                </label>
-                <label class="field">
-                  <span>Business name</span>
-                  <input id="auto-business" placeholder="Nova Harbor Supply" />
-                </label>
-                <label class="field">
-                  <span>Admin username</span>
-                  <input id="auto-admin" placeholder="admin" />
-                </label>
-                <label class="field">
-                  <span>Admin password</span>
-                  <input id="auto-password" type="text" autocomplete="off" />
                 </label>
                 <label class="field">
                   <span>DuckDNS token</span>
@@ -263,8 +251,59 @@
                 <label class="field">
                   <span>DuckDNS subdomain</span>
                   <input id="auto-sub" placeholder="farm" />
+                  <button type="button" class="random-link" data-random="subdomain">suggest</button>
                 </label>
               </div>
+
+              <details class="auto-help" open>
+                <summary>How to get the DuckDNS token and subdomain</summary>
+                <ol>
+                  <li>Open DuckDNS and sign in with Google, GitHub, Reddit or Twitter.</li>
+                  <li>
+                    Add a unique subdomain, e.g. <span class="mono">rac-novaharbor</span>.
+                    One DuckDNS account holds up to five.
+                  </li>
+                  <li>
+                    Copy the account token shown at the top of the domains page.
+                    One token covers every subdomain in that account.
+                  </li>
+                  <li>
+                    Paste the token and subdomain above. The extension writes the
+                    <span class="mono">google-site-verification</span> TXT record
+                    for you; you do not need to touch DNS.
+                  </li>
+                </ol>
+                <div class="buttons">
+                  <button class="btn tiny link-out" data-href="https://www.duckdns.org/domains">Open DuckDNS</button>
+                </div>
+              </details>
+
+              <details class="auto-optional">
+                <summary>Optional: business name, admin username, admin password</summary>
+                <div class="controls">
+                  <label class="field">
+                    <span>Business name</span>
+                    <input id="auto-business" placeholder="Nova Harbor Supply" />
+                    <button type="button" class="random-link" data-random="businessName">random</button>
+                  </label>
+                  <label class="field">
+                    <span>Admin username</span>
+                    <input id="auto-admin" placeholder="admin" />
+                    <button type="button" class="random-link" data-random="adminUser">random</button>
+                  </label>
+                  <label class="field">
+                    <span>Admin password</span>
+                    <input id="auto-password" type="text" autocomplete="off" />
+                    <button type="button" class="random-link" data-random="adminPassword">random</button>
+                  </label>
+                </div>
+                <p class="note">
+                  Leave any of these blank and the extension generates a value.
+                  The admin password is saved on the key row; if it is ever lost,
+                  <b>Recover admin</b> resets it and mints fresh backup codes with
+                  the key.
+                </p>
+              </details>
               <div class="buttons">
                 <button id="auto-start" class="btn primary">Start automatic setup</button>
                 <button id="auto-stop" class="btn danger">Stop</button>
