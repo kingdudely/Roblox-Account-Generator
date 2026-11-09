@@ -2818,6 +2818,8 @@ async function autoSetupLoop() {
       }
     }
 
+    if (!autoSetup.running || autoSetup.stop) break;
+
     try {
       await api.tabs.sendMessage(autoSetup.tabId, {
         type: "setup-fill",

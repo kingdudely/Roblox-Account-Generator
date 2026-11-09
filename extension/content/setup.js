@@ -34,6 +34,7 @@
     projectId: "",
     projectSent: false,
     paused: false,
+    lastHandoff: 0,
   };
 
   const visible = (el) => {
@@ -589,6 +590,11 @@
 
   function tick() {
     if (!state.profile || state.paused) return;
+    if (state.lastHandoff && Date.now() - state.lastHandoff > 30_000) {
+      state.paused = true;
+      note("runner stopped sending handoffs — automatic setup paused", "warn");
+      return;
+    }
     if (!document.body) return;
 
     const url = location.href;
@@ -635,6 +641,7 @@
       state.profile = message.profile || state.profile;
       state.phase = message.phase || "";
       state.paused = false;
+      state.lastHandoff = Date.now();
       if (message.profile?.adminEmail) state.profile.adminEmail = message.profile.adminEmail;
       start();
       sendResponse({ ok: true, url: location.href });
