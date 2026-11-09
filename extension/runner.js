@@ -7,6 +7,8 @@ import { log, stamp, CLIENT_ID } from "./lib/log.js";
 import { parseKeysText } from "./lib/keys.js";
 import * as admin from "./lib/admin.js";
 import { ensureContainer, runIdentity, retryFinalise } from "./lib/lane.js";
+import { cdpAvailable, attachCdp, detachCdp } from "./lib/cdp.js";
+import { driveSignupTick, resetSignupDriver } from "./lib/cdp-setup.js";
 import { parseClient, makeVerifier, waitForCode, exchangeCode } from "./lib/consent.js";
 import {
   scanTab,
@@ -2680,6 +2682,8 @@ const autoSetup = {
   lastUrl: "",
   phoneShown: false,
   projectId: "",
+  cdp: false,
+  cdpTried: false,
 };
 
 let autoDraft = null;
@@ -2925,7 +2929,10 @@ async function startAutoSetup() {
   autoSetup.projectId = "";
   autoSetup.phoneShown = false;
   autoSetup.lastUrl = "";
+  autoSetup.cdp = false;
+  autoSetup.cdpTried = false;
   autoSetup.storeId = await ensureSetupContainer();
+  resetSignupDriver();
   await persistAutoValues({ ...profile, phase: "signup" });
   await refresh();
   switchTab("setup");
@@ -2934,9 +2941,27 @@ async function startAutoSetup() {
   renderAutoSetup();
 
   try {
-    const options = { url: AUTO_SIGNUP, active: true };
-    if (autoSetup.storeId) options.cookieStoreId = autoSetup.storeId;
-    const tab = await api.tabs.create(options);
+    let tab = null;
+    if (cdpAvailable()) {
+      // A normal, visible Chrome window. The page sees a real window, and the
+      // debugger is attached only to this tab while the signup forms are open.
+      const created = await api.windows.create({
+        url: AUTO_SIGNUP,
+        width: 1366,
+        height: 768,
+        focused: true,
+        type: "normal",
+      });
+      const tabs = created.tabs?.length
+        ? created.tabs
+        : await api.tabs.query({ windowId: created.id });
+      tab = tabs[0];
+    } else {
+      const options = { url: AUTO_SIGNUP, active: true };
+      if (autoSetup.storeId) options.cookieStoreId = autoSetup.storeId;
+      tab = await api.tabs.create(options);
+    }
+    if (!tab) throw new Error("setup tab did not open");
     autoSetup.tabId = tab.id;
     renderAutoSetup();
     autoSetupLoop().catch((error) =>
@@ -2952,6 +2977,10 @@ async function startAutoSetup() {
 function stopAutoSetup(reason = "stopped") {
   autoSetup.running = false;
   autoSetup.stop = true;
+  if (autoSetup.cdp) {
+    autoSetup.cdp = false;
+    detachCdp(autoSetup.tabId).catch(() => {});
+  }
   if (autoSetup.tabId) {
     api.tabs
       .sendMessage(autoSetup.tabId, { type: "setup-stop" })
@@ -2999,14 +3028,83 @@ async function autoSetupLoop() {
 
     if (!autoSetup.running || autoSetup.stop) break;
 
-    try {
-      await api.tabs.sendMessage(autoSetup.tabId, {
-        type: "setup-fill",
-        profile: autoSetup.profile,
-        phase: autoSetup.phase,
-      });
-    } catch (_) {
-      // The content script is declared at document_idle; the next tick lands.
+    const onSignup = /^https:\/\/workspace\.google\.com\/gcpidentity\/signup/i.test(url);
+    let cdpMode = false;
+
+    if (cdpAvailable() && onSignup) {
+      if (!autoSetup.cdp && !autoSetup.cdpTried) {
+        autoSetup.cdpTried = true;
+        try {
+          await attachCdp(autoSetup.tabId);
+          autoSetup.cdp = true;
+          autoLog("debugger attached — trusted input for the signup");
+        } catch (error) {
+          autoLog(
+            `debugger attach failed: ${error.message || error} — using DOM input`,
+            "warn"
+          );
+        }
+      }
+      if (autoSetup.cdp) {
+        cdpMode = true;
+        try {
+          await api.tabs.sendMessage(autoSetup.tabId, {
+            type: "setup-fill",
+            profile: autoSetup.profile,
+            phase: autoSetup.phase,
+            cdp: true,
+          });
+        } catch (_) {
+          // content script not ready
+        }
+        try {
+          const result = await driveSignupTick(
+            autoSetup.tabId,
+            autoSetup.profile,
+            autoLog
+          );
+          if (result?.error) {
+            autoLog(result.error, "error");
+            autoStatus("Google refused the signup");
+            stopAutoSetup("Google refused the signup");
+            return;
+          }
+          if (result?.transient) {
+            autoLog(`cdp: page changed — waiting (${result.transient.slice(0, 90)})`, "info");
+          }
+          if (result?.done) {
+            autoSetup.cdp = false;
+            await detachCdp(autoSetup.tabId);
+            autoLog("signup form finished — debugger detached");
+            cdpMode = false;
+          }
+        } catch (error) {
+          autoSetup.cdp = false;
+          await detachCdp(autoSetup.tabId);
+          autoLog(
+            `trusted input stopped: ${error.message || error} — using DOM input`,
+            "warn"
+          );
+          cdpMode = false;
+        }
+      }
+    } else if (autoSetup.cdp) {
+      autoSetup.cdp = false;
+      await detachCdp(autoSetup.tabId);
+      autoLog("signup form finished — debugger detached");
+    }
+
+    if (!cdpMode) {
+      try {
+        await api.tabs.sendMessage(autoSetup.tabId, {
+          type: "setup-fill",
+          profile: autoSetup.profile,
+          phase: autoSetup.phase,
+          cdp: false,
+        });
+      } catch (_) {
+        // The content script is declared at document_idle; the next tick lands.
+      }
     }
 
     // myaccount.google.com has the existing 2SV wizard, which content/google.js
@@ -3282,6 +3380,10 @@ async function handleAutoClient(message) {
   autoStatus("done — key ready");
   autoSetup.phase = "done";
   autoSetup.running = false;
+  if (autoSetup.cdp) {
+    autoSetup.cdp = false;
+    await detachCdp(autoSetup.tabId);
+  }
   if (autoSetup.tabId) {
     api.tabs
       .sendMessage(autoSetup.tabId, { type: "setup-stop" })
@@ -3515,6 +3617,15 @@ function wireSecretToggles() {
 }
 
 function wire() {
+  if (api.debugger?.onDetach) {
+    api.debugger.onDetach.addListener((source) => {
+      if (autoSetup.cdp && source?.tabId === autoSetup.tabId) {
+        autoSetup.cdp = false;
+        autoLog("debugger detached — using DOM input", "warn");
+      }
+    });
+  }
+
   document.querySelectorAll(".tab").forEach((tab) => {
     tab.addEventListener("click", () => {
       document.querySelectorAll(".tab").forEach((node) => node.classList.toggle("active", node === tab));

@@ -4,40 +4,23 @@ A browser extension that turns Cloud Identity keys into Roblox accounts.
 Setup instructions, key validation, the run console and the phone-gate decoder
 all live inside the extension.
 
-## Firefox — recommended
-
-Firefox is the target browser: containers give each lane its own cookie jar, so
-several sign-ins run in one window.
-
-```
-about:debugging#/runtime/this-firefox
-  → Load Temporary Add-on…
-  → pick extension/manifest.json
-```
-
-Temporary add-ons disappear when Firefox closes. For a permanent install, zip the
-`extension/` folder and sign it:
-
-```bash
-npx web-ext sign --source-dir extension --artifacts-dir dist
-```
-
-Stable Firefox will not load an unsigned extension permanently.
-
 ## Chrome / Chromium
 
-Chrome has one cookie jar per profile, so it runs one lane. Use the MV3 manifest
-for Chrome:
-
-```bash
-rm -rf dist/chrome
-cp -r extension dist/chrome
-cp dist/chrome/manifest.chrome.json dist/chrome/manifest.json
-```
+Chrome is the target browser. Load the unpacked extension directly:
 
 ```
-chrome://extensions → Developer mode → Load unpacked → dist/chrome
+chrome://extensions → Developer mode → Load unpacked → extension
 ```
+
+The extension asks for the **debugger** permission. That is what lets the
+automatic setup type and click through Chrome's own input pipeline instead of
+synthetic DOM events. Chrome shows a “started debugging this browser” bar while
+the signup forms are being filled; the extension detaches as soon as the signup
+moves to the Google account step.
+
+Chrome has one cookie jar per profile, so the extension runs **one lane** in a
+profile. Running several lanes means one Chrome profile per lane (a later
+addition); it is not a container replacement.
 
 ## First run
 
@@ -105,13 +88,15 @@ a mirror; closing the tab loses nothing.
 
 ```
 extension/
-  manifest.json          Firefox MV3 (containers, event page)
-  manifest.chrome.json   Chrome MV3 (service worker)
+  manifest.json          Chrome MV3 (service worker)
+  manifest.chrome.json   mirror of the same manifest, kept for old build scripts
   runner.html/.css/.js   the run loop and the whole UI
   background.js          opens the runner, owns the log ring
   content/google.js      fills Google's sign-in pages
   content/setup.js       drives the automatic Cloud Identity signup / console
   content/awake.js       main-world shim: frame clock + visibility for hidden lanes
+  lib/cdp.js             chrome.debugger transport
+  lib/cdp-setup.js       trusted-input signup driver
   lib/                   admin, lanes, keys, consent, QR, storage
 ```
 
@@ -120,16 +105,8 @@ remains in the Git history. The extension is self-contained.
 
 ## Testing
 
-`tools/e2e.py` installs the unpacked extension into a throwaway Firefox, seeds
-one tenant key, runs a single identity and prints the console as it happens:
+Load the unpacked extension in Chrome, add a key, and run one identity. The
+automatic setup can be tested separately from the Setup tab.
 
-```bash
-python3 tools/e2e.py --key key.json --headful
-```
-
-`key.json` is `{"client_id": …, "client_secret": …, "refresh_token": …}` for a
-tenant you own. It is never written into the repo. The harness verifies the
-manifest, the runner boot, identity creation, code minting, the container lane
-and the awake shim. It cannot clear Google's own captcha from a clean profile —
-if the log stops at `identifier for …`, that is the captcha, and `--headful`
-plus one solved image is the only way past it.
+`tools/e2e.py` is the older Firefox harness; it is legacy and not part of the
+Chrome target.

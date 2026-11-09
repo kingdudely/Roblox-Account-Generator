@@ -1,17 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Roblox Alt Creator",
-  "version": "0.4.5",
+  "version": "0.5.0",
   "description": "Cloud Identity keys to identities to Roblox accounts, with phone-gate decoding.",
-  "browser_specific_settings": {
-    "gecko": {
-      "id": "roblox-alt-creator@local",
-      "strict_min_version": "128.0",
-      "data_collection_permissions": {
-        "required": ["authenticationInfo", "personallyIdentifyingInfo"]
-      }
-    }
-  },
   "permissions": [
     "cookies",
     "tabs",
@@ -19,9 +10,9 @@
     "downloads",
     "webNavigation",
     "scripting",
-    "contextualIdentities",
     "activeTab",
-    "proxy"
+    "proxy",
+    "debugger"
   ],
   "host_permissions": [
     "https://accounts.google.com/*",
@@ -32,7 +23,7 @@
     "https://www.duckdns.org/*"
   ],
   "background": {
-    "scripts": ["background.js"]
+    "service_worker": "background.js"
   },
   "action": {
     "default_title": "Roblox Alt Creator",

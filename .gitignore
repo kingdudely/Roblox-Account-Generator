@@ -8,6 +8,7 @@ proxies*.txt
 proxiesithink.txt
 .env
 *.log
+*.har
 
 # regenerable / large
 .venv/

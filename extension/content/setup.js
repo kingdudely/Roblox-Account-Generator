@@ -35,6 +35,7 @@
     projectSent: false,
     paused: false,
     lastHandoff: 0,
+    cdp: false,
   };
 
   const visible = (el) => {
@@ -221,6 +222,10 @@
   // -------------------------------------------------------------- signup funnel
 
   function signupTick(body) {
+    // Chrome's automatic path drives these pages through CDP Input, which
+    // produces trusted events. Do not fill or click from here at the same time.
+    if (state.cdp) return;
+
     const path = location.pathname.replace(/\/+$/, "");
 
     if (maybePhoneGate(location.href, body)) return;
@@ -640,6 +645,7 @@
     if (message.type === "setup-fill") {
       state.profile = message.profile || state.profile;
       state.phase = message.phase || "";
+      state.cdp = Boolean(message.cdp);
       state.paused = false;
       state.lastHandoff = Date.now();
       if (message.profile?.adminEmail) state.profile.adminEmail = message.profile.adminEmail;
