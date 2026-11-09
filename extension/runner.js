@@ -7,8 +7,6 @@ import { log, stamp, CLIENT_ID } from "./lib/log.js";
 import { parseKeysText } from "./lib/keys.js";
 import * as admin from "./lib/admin.js";
 import { ensureContainer, runIdentity, retryFinalise } from "./lib/lane.js";
-import { cdpAvailable, attachCdp, detachCdp } from "./lib/cdp.js";
-import { driveSignupTick, resetSignupDriver } from "./lib/cdp-setup.js";
 import { parseClient, makeVerifier, waitForCode, exchangeCode } from "./lib/consent.js";
 import {
   scanTab,
@@ -688,14 +686,14 @@ async function addKeys(text, source = "pasted") {
 // run writes it back into the same entry, so the tenant row never duplicates.
 async function authorizeKey(id, options = {}) {
   const key = state.keys.find((entry) => entry.id === id);
-  if (!key) return;
+  if (!key) return false;
   if (key.kind === "service_account") {
     await remember(`${key.label}: service accounts do not need consent`, "warn");
-    return;
+    return false;
   }
   if (!key.client_id || !key.client_secret) {
     await remember(`${key.label}: client_id or client_secret is missing`, "error");
-    return;
+    return false;
   }
 
   try {
@@ -733,8 +731,10 @@ async function authorizeKey(id, options = {}) {
     await refresh();
     await remember(`${key.label}: consent granted`, "ok");
     await checkKey(id);
+    return true;
   } catch (error) {
     await remember(`${key.label}: ${error.message || error}`, "error");
+    return false;
   }
 }
 
@@ -807,7 +807,6 @@ async function recoverAdmin(id) {
         draft.setup.auto.adminPassword = password;
       }
     });
-    autoDraft = null;
     await refresh();
     await remember(
       `${target}: admin password reset and ${codes.length} backup code(s) minted`,
@@ -2332,10 +2331,6 @@ async function saveDuck(fields) {
       };
     }
   });
-  if (autoDraft) {
-    if (fields.token !== undefined) autoDraft.token = fields.token;
-    if (fields.subdomain !== undefined) autoDraft.subdomain = fields.subdomain;
-  }
   state = await load();
   renderDuckdns();
   renderSetup();
@@ -2384,6 +2379,9 @@ async function duckWrite() {
 
     if (result.found) {
       await remember(`TXT is live on ${fullDomain(sub)}`, "ok");
+      if (autoSetup.running && autoSetup.phase === "tenant") {
+        await signalAutoDomainReady();
+      }
     } else {
       await remember(
         "TXT was accepted but does not resolve yet — DNS can lag a minute. Press Check now, then Verify in Admin.",
@@ -2413,6 +2411,9 @@ async function duckCheck() {
       : "no TXT answer";
     await saveDuck({ answer, checked_at: new Date().toISOString() });
     await remember(`${fullDomain(sub)}: ${answer}`, hit ? "ok" : "warn");
+    if (hit && autoSetup.running && autoSetup.phase === "tenant") {
+      await signalAutoDomainReady();
+    }
     await refreshChecklist();
   } catch (error) {
     await remember(`DNS check failed: ${error.message || error}`, "error");
@@ -2565,7 +2566,6 @@ function setupState() {
     done: setup.done || {},
     open: setup.open || {},
     hideDone: Boolean(setup.hideDone),
-    mode: setup.mode === "buy" || setup.mode === "auto" ? setup.mode : "manual",
   };
 }
 
@@ -2599,21 +2599,6 @@ function renderSetup() {
   if (!steps.length) return;
 
   const setup = setupState();
-  const panel = $("panel-setup");
-  if (panel) panel.dataset.mode = setup.mode;
-
-  for (const button of document.querySelectorAll("[data-setup-mode]")) {
-    const active = button.dataset.setupMode === setup.mode;
-    button.classList.toggle("primary", active);
-    button.setAttribute("aria-selected", String(active));
-  }
-  const modeNotes = {
-    buy: "Buy a ready key; no tenant, no phone gate, no OAuth client to build. Paste it in Keys.",
-    manual: "Follow the five steps at your own pace. Re-check reads the tenant and marks the evidence.",
-    auto: "The extension drives the Cloud Identity signup, the domain TXT record, and the console. It stops for the phone gate (and a captcha) and shows the QR and number here.",
-  };
-  setText("setup-mode-note", modeNotes[setup.mode] || modeNotes.manual);
-
   const firstOpen = SETUP_TICKABLE.find((id) => !setup.done[id]);
   let complete = 0;
 
@@ -2676,52 +2661,72 @@ function renderSetup() {
   renderAutoSetup();
 }
 
-// ------------------------------------------------------------- automatic setup
+// ------------------------------------------------------------- automatic finish
 
-const AUTO_SIGNUP =
-  "https://workspace.google.com/gcpidentity/signup?sku=identitybasic";
+const AUTO_ADMIN = "https://admin.google.com/";
+const AUTO_DOMAINS = "https://admin.google.com/ac/domains/manage";
 const AUTO_BILLING = "https://admin.google.com/ac/billing/catalog";
 const AUTO_ADMIN_2SV =
   "https://myaccount.google.com/signinoptions/two-step-verification";
 const AUTO_2SV = "https://admin.google.com/ac/security/2sv";
 const AUTO_PROJECT = "https://console.cloud.google.com/projectcreate";
 
+// The automatic branch never creates the tenant or the DuckDNS name. It opens
+// one worker tab, waits for the user to sign in as the tenant admin, then does
+// the mechanical work: domain check, Cloud Identity, admin 2SV/policy and the
+// OAuth key. The user's own Admin console tab is never touched.
 const autoSetup = {
   running: false,
   stop: false,
   tabId: null,
   storeId: null,
   profile: null,
-  phase: "",
+  phase: "idle",
   status: "idle",
   lastUrl: "",
-  phoneShown: false,
+  adminEmail: "",
+  adminAt: 0,
+  domainAt: 0,
+  billingAt: 0,
+  twoStepAt: 0,
+  policyAt: 0,
+  keyAt: 0,
+  domainsOpened: false,
+  domainReadyPending: false,
+  domainWarnAt: 0,
   projectId: "",
-  cdp: false,
-  cdpTried: false,
 };
 
-let autoDraft = null;
-
 function autoValues() {
-  if (autoDraft) return autoDraft;
   const saved = state.setup?.auto || {};
   const duck = state.duckdns || {};
-  const person = makePerson();
-  const subdomain = saved.subdomain || duck.subdomain || "";
-  autoDraft = {
-    recoveryEmail: saved.recoveryEmail || "",
-    businessName: saved.businessName || makeBusinessName(),
-    firstName: saved.firstName || person.first,
-    lastName: saved.lastName || person.last,
-    adminUser: saved.adminUser || "admin",
-    adminPassword: saved.adminPassword || makeAdminPassword(),
-    projectName:
-      saved.projectName || (subdomain ? `${subdomain}-rac` : ""),
+  const subdomain = String(saved.subdomain || duck.subdomain || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\.duckdns\.org$/, "")
+    .replace(/[^a-z0-9-]/g, "");
+  return {
     subdomain,
-    token: saved.token || duck.token || "",
+    token: String(saved.token || duck.token || "").trim(),
+    businessName: subdomain
+      ? subdomain.replace(/-+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase())
+      : saved.businessName || "RAC tenant",
+    projectName: subdomain ? `${subdomain}-rac` : saved.projectName || "",
+    recoveryEmail: saved.recoveryEmail || "",
+    adminPassword: saved.adminPassword || "",
   };
-  return autoDraft;
+}
+
+function autoProfile() {
+  if (!autoSetup.profile) {
+    const values = autoValues();
+    autoSetup.profile = {
+      ...values,
+      domain: values.subdomain ? fullDomain(values.subdomain) : "",
+      adminEmail: autoSetup.adminEmail || "",
+    };
+  }
+  return autoSetup.profile;
 }
 
 function autoStatus(text) {
@@ -2729,114 +2734,110 @@ function autoStatus(text) {
   setText("auto-status", text);
 }
 
-function randomSubdomain() {
-  const base = makeBusinessName()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  const suffix = 100 + Math.floor(Math.random() * 900);
-  return `rac-${base}-${suffix}`.slice(0, 63).replace(/-+$/g, "");
-}
-
-function autoProfile() {
-  if (autoSetup.profile) return autoSetup.profile;
-  const values = autoValues();
-  const subdomain = values.subdomain || state.duckdns?.subdomain || "";
-  const domain = subdomain ? fullDomain(subdomain) : "";
-  return {
-    ...values,
-    subdomain,
-    domain,
-    adminEmail: `${values.adminUser || "admin"}@${domain}`,
-    region: "United States",
-  };
-}
-
 function autoLog(text, level = "info") {
   remember(`[auto] ${text}`, level).catch(() => {});
 }
 
+async function persistAutoState(patch = {}) {
+  await mutate((draft) => {
+    draft.setup.auto = { ...(draft.setup.auto || {}), ...patch };
+    if (patch.token !== undefined) draft.duckdns.token = patch.token || "";
+    if (patch.subdomain !== undefined) {
+      draft.duckdns.subdomain = patch.subdomain || "";
+    }
+  });
+  state = await load();
+}
+
+function autoAdminEmail() {
+  return String(autoSetup.adminEmail || autoProfile().adminEmail || "").toLowerCase();
+}
+
+function autoAdminOtp() {
+  const profile = autoProfile();
+  const email = autoAdminEmail();
+  const totp = state.totp || {};
+  const owner = String(totp.email || "").toLowerCase();
+  if (!totp.secret) return "";
+  if (!owner) return totp.secret;
+  if (email && owner === email) return totp.secret;
+  if (profile.domain && owner.endsWith(`@${profile.domain}`)) {
+    return totp.secret;
+  }
+  return "";
+}
+
+function ensureAutoAdminLabel() {
+  if (autoAdminEmail()) return;
+  const profile = autoProfile();
+  if (!profile.domain) return;
+  autoSetup.adminEmail = `admin@${profile.domain}`;
+  profile.adminEmail = autoSetup.adminEmail;
+  autoLog(
+    `admin address was not visible; using ${autoSetup.adminEmail} as a label`,
+    "warn"
+  );
+  persistAutoState({ adminEmail: autoSetup.adminEmail }).catch(() => {});
+  renderAutoSetup();
+}
+
+function autoPhaseLabel(phase) {
+  return (
+    {
+      idle: "idle",
+      login: "sign-in",
+      tenant: "tenant",
+      billing: "Cloud Identity",
+      twofa: "admin 2SV",
+      policy: "policy",
+      key: "key",
+      done: "done",
+      stopped: "stopped",
+    }[phase] || phase
+  );
+}
+
 function renderAutoSetup() {
-  const values = autoValues();
-  const set = (id, value) => {
-    const el = $(id);
-    if (el && document.activeElement !== el) el.value = value || "";
-  };
-  set("auto-recovery", values.recoveryEmail);
-  set("auto-business", values.businessName);
-  set("auto-admin", values.adminUser);
-  set("auto-password", values.adminPassword);
-  set("auto-token", values.token);
-  set("auto-sub", values.subdomain);
+  const run = $("auto-run");
+  if (run) {
+    run.hidden =
+      !autoSetup.running && !autoSetup.tabId && autoSetup.status === "idle";
+  }
   setText("auto-status", autoSetup.status || "idle");
+  setText("auto-phase", autoPhaseLabel(autoSetup.phase));
+
+  const done = state.setup?.done || {};
+  const tasks = {
+    admin: ["tenant", "billing", "twofa", "policy", "key", "done"].includes(
+      autoSetup.phase
+    ),
+    tenant: Boolean(done.tenant),
+    twostep: Boolean(done.twostep),
+    key: Boolean(done.key),
+  };
+  for (const row of document.querySelectorAll("[data-auto-task]")) {
+    const id = row.dataset.autoTask;
+    row.dataset.ok = String(Boolean(tasks[id]));
+    const label = row.querySelector("em");
+    if (label) {
+      label.textContent = tasks[id] ? "done" : autoSetup.running ? "waiting" : "idle";
+    }
+  }
 
   const start = $("auto-start");
   if (start) start.disabled = autoSetup.running;
   const stop = $("auto-stop");
   if (stop) stop.disabled = !autoSetup.running;
-
-  const hasProject = Boolean(autoSetup.projectId);
   const skip = $("auto-continue");
   if (skip) {
-    const late =
-      /admin\.google\.com|console\.cloud\.google\.com/.test(
-        autoSetup.lastUrl || ""
-      );
     skip.disabled = !(
-      autoSetup.tabId &&
-      (late || ["domain", "twofa"].includes(autoSetup.phase))
+      autoSetup.tabId && ["tenant", "twofa", "policy", "key"].includes(autoSetup.phase)
     );
   }
   const credentials = $("auto-credentials");
-  if (credentials) credentials.disabled = !hasProject;
+  if (credentials) credentials.disabled = !autoSetup.projectId;
   const keys = $("auto-keys");
   if (keys) keys.disabled = !autoSetup.tabId;
-
-  const phone = $("auto-phone");
-  if (phone) phone.hidden = !autoSetup.phoneShown;
-}
-
-function readAutoFields() {
-  const values = { ...autoValues() };
-  const pairs = [
-    ["auto-recovery", "recoveryEmail"],
-    ["auto-business", "businessName"],
-    ["auto-admin", "adminUser"],
-    ["auto-password", "adminPassword"],
-    ["auto-token", "token"],
-    ["auto-sub", "subdomain"],
-  ];
-  for (const [id, key] of pairs) {
-    const el = $(id);
-    if (el) values[key] = el.value.trim();
-  }
-  autoDraft = values;
-  return values;
-}
-
-async function persistAutoValues(values) {
-  await mutate((draft) => {
-    draft.setup.mode = "auto";
-    draft.setup.auto = {
-      ...(draft.setup.auto || {}),
-      recoveryEmail: values.recoveryEmail || "",
-      businessName: values.businessName || "",
-      firstName: values.firstName || "",
-      lastName: values.lastName || "",
-      adminUser: values.adminUser || "admin",
-      adminPassword: values.adminPassword || "",
-      projectName: values.projectName || "",
-      subdomain: values.subdomain || "",
-      token: values.token || "",
-      phase: values.phase || draft.setup.auto?.phase || "",
-    };
-    if (values.token !== undefined) draft.duckdns.token = values.token || "";
-    if (values.subdomain !== undefined) {
-      draft.duckdns.subdomain = values.subdomain || "";
-    }
-  });
-  state = await load();
-  renderDuckdns();
 }
 
 async function ensureSetupContainer() {
@@ -2856,18 +2857,128 @@ async function ensureSetupContainer() {
   }
 }
 
-async function focusAutoTab(tab) {
-  const current = tab || (await api.tabs.get(autoSetup.tabId).catch(() => null));
+async function startAutoSetup() {
+  if (autoSetup.running) {
+    await remember("automatic finish is already running", "warn");
+    return;
+  }
+
+  const values = autoValues();
+  const token = String(values.token || "").trim();
+  const subdomain = String(values.subdomain || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\.duckdns\.org$/, "")
+    .replace(/[^a-z0-9-]/g, "");
+  const domain = subdomain ? fullDomain(subdomain) : "";
+
+  if (!token) {
+    await remember(
+      "automatic finish needs the DuckDNS token from step 1 — save it first",
+      "error"
+    );
+    await setSetup((draft) => {
+      draft.open.dns = true;
+    });
+    openStep("dns", true);
+    return;
+  }
+  if (!/^[a-z0-9-]{1,63}$/.test(subdomain)) {
+    await remember("automatic finish needs the DuckDNS subdomain from step 1", "error");
+    await setSetup((draft) => {
+      draft.open.dns = true;
+    });
+    openStep("dns", true);
+    return;
+  }
+
+  const previous = state.setup?.auto || {};
+  const previousAdmin = String(previous.adminEmail || "").toLowerCase();
+  const seededAdmin = previousAdmin.endsWith(`@${domain}`) ? previousAdmin : "";
+  autoSetup.profile = {
+    ...values,
+    token,
+    subdomain,
+    domain,
+    adminEmail: seededAdmin,
+    adminPassword: "",
+  };
+
+  autoSetup.running = true;
+  autoSetup.stop = false;
+  autoSetup.tabId = null;
+  autoSetup.phase = "login";
+  autoSetup.status = "opening the Admin console";
+  autoSetup.lastUrl = "";
+  autoSetup.adminEmail = seededAdmin;
+  autoSetup.adminAt = 0;
+  autoSetup.domainAt = 0;
+  autoSetup.billingAt = 0;
+  autoSetup.twoStepAt = 0;
+  autoSetup.policyAt = 0;
+  autoSetup.keyAt = 0;
+  autoSetup.domainsOpened = false;
+  autoSetup.domainReadyPending = false;
+  autoSetup.domainWarnAt = 0;
+  autoSetup.projectId = "";
+  autoSetup.storeId = await ensureSetupContainer();
+
+  await persistAutoState({
+    token,
+    subdomain,
+    domain,
+    adminEmail: autoSetup.adminEmail,
+    projectName: autoSetup.profile.projectName,
+    phase: "login",
+  });
+  await refresh();
+  switchTab("setup");
+  autoLog(
+    `automatic finish started for ${domain}; sign in as the tenant admin in the new tab`
+  );
+  renderAutoSetup();
+
+  try {
+    const options = { url: AUTO_ADMIN, active: true };
+    if (autoSetup.storeId) options.cookieStoreId = autoSetup.storeId;
+    const tab = await api.tabs.create(options);
+    if (!tab) throw new Error("the setup tab did not open");
+    autoSetup.tabId = tab.id;
+    renderAutoSetup();
+    autoSetupLoop().catch((error) =>
+      autoLog(`setup loop stopped: ${error.message || error}`, "error")
+    );
+  } catch (error) {
+    autoSetup.running = false;
+    autoSetup.status = "could not open the Admin console tab";
+    autoLog(`could not open the Admin console tab: ${error.message || error}`, "error");
+    renderAutoSetup();
+  }
+}
+
+function stopAutoSetup(reason = "stopped") {
+  autoSetup.running = false;
+  autoSetup.stop = true;
+  autoSetup.phase = "stopped";
+  if (autoSetup.tabId) {
+    api.tabs
+      .sendMessage(autoSetup.tabId, { type: "setup-stop" })
+      .catch(() => {});
+  }
+  autoStatus(reason);
+  autoLog(`automatic finish ${reason}; the worker tab is left open`, "warn");
+  renderAutoSetup();
+}
+
+async function focusAutoTab() {
+  if (!autoSetup.tabId) return;
+  const current = await api.tabs.get(autoSetup.tabId).catch(() => null);
   if (!current) return;
   try {
     await api.tabs.update(current.id, { active: true });
-  } catch (_) {
-    // tab gone
-  }
-  try {
     if (current.windowId) await api.windows.update(current.windowId, { focused: true });
   } catch (_) {
-    // window gone
+    // tab gone
   }
 }
 
@@ -2882,398 +2993,207 @@ async function focusRunnerTab() {
   }
 }
 
-async function startAutoSetup() {
-  if (autoSetup.running) {
-    await remember("automatic setup is already running", "warn");
-    return;
+function autoTabKind(url) {
+  if (/accounts\.google\.com/.test(url)) return "sign-in";
+  if (/^https:\/\/admin\.google\.com\/ac\/domains\/manage/i.test(url)) return "domains";
+  if (/^https:\/\/admin\.google\.com\/ac\/billing/i.test(url)) return "billing";
+  if (/^https:\/\/admin\.google\.com\/ac\/security\/2sv/i.test(url)) return "policy";
+  if (/^https:\/\/admin\.google\.com\//i.test(url)) return "admin";
+  if (/^https:\/\/myaccount\.google\.com\//i.test(url)) return "twofa";
+  if (/^https:\/\/console\.cloud\.google\.com\//i.test(url)) return "console";
+  return "other";
+}
+
+async function signalAutoDomainReady() {
+  autoSetup.domainReadyPending = true;
+  autoStatus("verifying the domain");
+  autoLog("TXT record is visible; telling Google to verify");
+  const tab = await api.tabs.get(autoSetup.tabId).catch(() => null);
+  if (
+    tab &&
+    !/^https:\/\/admin\.google\.com\/ac\/domains\/manage/i.test(tab.url || "")
+  ) {
+    await api.tabs.update(autoSetup.tabId, { url: AUTO_DOMAINS }).catch(() => {});
   }
-
-  const values = readAutoFields();
-  const token = values.token || state.duckdns?.token || "";
-  const rawSubdomain = String(values.subdomain || state.duckdns?.subdomain || "")
-    .trim()
-    .toLowerCase()
-    .replace(/\.duckdns\.org$/, "");
-  const subdomain = rawSubdomain.replace(/[^a-z0-9-]/g, "");
-  const domain = fullDomain(subdomain);
-
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(values.recoveryEmail)) {
-    await remember("automatic setup needs a real recovery email address", "error");
-    return;
-  }
-  if (!token) {
-    await remember("automatic setup needs a DuckDNS account token", "error");
-    return;
-  }
-  if (!/^[a-z0-9-]{1,63}$/.test(subdomain)) {
-    await remember("automatic setup needs a DuckDNS subdomain", "error");
-    return;
-  }
-
-  // Everything below this line is optional. A blank field is generated, not
-  // rejected: the admin password is saved, and Recover admin can replace it
-  // later with the key if it is lost.
-  const person = makePerson();
-  const businessName = values.businessName || makeBusinessName();
-  const firstName = values.firstName || person.first;
-  const lastName = values.lastName || person.last;
-  const adminUser =
-    String(values.adminUser || "")
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9._-]/g, "") || "admin";
-  const adminPassword = values.adminPassword || makeAdminPassword();
-
-  const profile = {
-    ...values,
-    businessName,
-    firstName,
-    lastName,
-    adminUser,
-    adminPassword,
-    token,
-    subdomain,
-    domain,
-    projectName: values.projectName || `${subdomain}-rac`,
-    adminEmail: `${adminUser}@${domain}`,
-    region: "United States",
-  };
-
-  autoSetup.running = true;
-  autoSetup.stop = false;
-  autoSetup.profile = profile;
-  autoSetup.phase = "signup";
-  autoSetup.tabId = null;
-  autoSetup.projectId = "";
-  autoSetup.phoneShown = false;
-  autoSetup.lastUrl = "";
-  autoSetup.cdp = false;
-  autoSetup.cdpTried = false;
-  autoSetup.storeId = await ensureSetupContainer();
-  resetSignupDriver();
-  await persistAutoValues({ ...profile, phase: "signup" });
-  await refresh();
-  switchTab("setup");
-  autoStatus("opening Google signup");
-  autoLog("automatic setup started");
-  renderAutoSetup();
-
   try {
-    let tab = null;
-    if (cdpAvailable()) {
-      // A normal, visible Chrome window. The page sees a real window, and the
-      // debugger is attached only to this tab while the signup forms are open.
-      const created = await api.windows.create({
-        url: AUTO_SIGNUP,
-        width: 1366,
-        height: 768,
-        focused: true,
-        type: "normal",
-      });
-      const tabs = created.tabs?.length
-        ? created.tabs
-        : await api.tabs.query({ windowId: created.id });
-      tab = tabs[0];
-    } else {
-      const options = { url: AUTO_SIGNUP, active: true };
-      if (autoSetup.storeId) options.cookieStoreId = autoSetup.storeId;
-      tab = await api.tabs.create(options);
-    }
-    if (!tab) throw new Error("setup tab did not open");
-    autoSetup.tabId = tab.id;
-    renderAutoSetup();
-    autoSetupLoop().catch((error) =>
-      autoLog(`setup loop stopped: ${error.message || error}`, "error")
-    );
-  } catch (error) {
-    autoSetup.running = false;
-    autoStatus("could not open the setup tab");
-    autoLog(`could not open the setup tab: ${error.message || error}`, "error");
+    await api.tabs.sendMessage(autoSetup.tabId, { type: "setup-domain-ready" });
+    autoSetup.domainReadyPending = false;
+  } catch (_) {
+    // sendAutoHandoff retries once the content script is listening
   }
 }
 
-function stopAutoSetup(reason = "stopped") {
-  autoSetup.running = false;
-  autoSetup.stop = true;
-  if (autoSetup.cdp) {
-    autoSetup.cdp = false;
-    detachCdp(autoSetup.tabId).catch(() => {});
+async function sendAutoHandoff(url) {
+  const profile = autoProfile();
+  if (
+    /^https:\/\/admin\.google\.com\//i.test(url) ||
+    /^https:\/\/console\.cloud\.google\.com\//i.test(url) ||
+    /^https:\/\/accounts\.google\.com\//i.test(url)
+  ) {
+    try {
+      await api.tabs.sendMessage(autoSetup.tabId, {
+        type: "setup-fill",
+        profile: {
+          ...profile,
+          adminEmail: autoAdminEmail(),
+          recoveryEmail: autoAdminEmail() || profile.recoveryEmail,
+        },
+        phase: autoSetup.phase,
+      });
+      if (autoSetup.domainReadyPending) {
+        await api.tabs.sendMessage(autoSetup.tabId, {
+          type: "setup-domain-ready",
+        });
+        autoSetup.domainReadyPending = false;
+      }
+    } catch (_) {
+      // the content script is not ready yet
+    }
   }
-  if (autoSetup.tabId) {
-    api.tabs
-      .sendMessage(autoSetup.tabId, { type: "setup-stop" })
-      .catch(() => {});
+
+  if (/^https:\/\/myaccount\.google\.com\//i.test(url)) {
+    try {
+      await api.tabs.sendMessage(autoSetup.tabId, {
+        type: "google-fill",
+        email: autoAdminEmail(),
+        password: "",
+        code: "",
+        codes: [],
+        otp: autoAdminOtp(),
+      });
+    } catch (_) {
+      // google.js is not ready yet
+    }
   }
-  autoStatus(reason);
-  autoLog(`automatic setup ${reason}; the setup tab is left open`, "warn");
-  renderAutoSetup();
+}
+
+async function openAutoDomains() {
+  if (autoSetup.domainsOpened || !autoSetup.tabId) return;
+  ensureAutoAdminLabel();
+  autoSetup.domainsOpened = true;
+  autoSetup.domainAt = Date.now();
+  autoStatus("checking the domain");
+  await api.tabs.update(autoSetup.tabId, { url: AUTO_DOMAINS }).catch(() => {});
 }
 
 async function autoSetupLoop() {
   while (autoSetup.running && !autoSetup.stop) {
     const tab = await api.tabs.get(autoSetup.tabId).catch(() => null);
     if (!tab) {
-      autoLog("setup tab closed", "warn");
-      stopAutoSetup("tab closed");
+      stopAutoSetup("the worker tab was closed");
       return;
     }
 
     const url = tab.url || "";
+    const kind = autoTabKind(url);
     if (url !== autoSetup.lastUrl) {
       autoSetup.lastUrl = url;
       autoLog(`at ${url.slice(0, 150)}`);
-      if (/challenge\/iap\/qrcode/i.test(url)) {
-        autoStatus("phone gate — scan the QR");
-        autoSetup.phoneShown = true;
-        renderAutoSetup();
-        focusRunnerTab().catch(() => {});
-        scanAutoPhone().catch(() => {});
-      } else if (/accounts\.google\.com/.test(url)) {
-        autoStatus("Google sign-in");
-      } else if (/gcpidentity\/signup/.test(url)) autoStatus("filling the signup");
-      else if (/\/verify\//.test(url)) autoStatus("verifying the domain");
-      else if (/admin\.google\.com/.test(url)) autoStatus("admin console");
-      else if (/console\.cloud\.google\.com/.test(url)) autoStatus("cloud console");
-      if (autoSetup.phoneShown) {
-        if (/accounts\.google\.com/.test(url)) {
-          if (!/challenge\/iap\/qrcode/i.test(url)) scanAutoPhone().catch(() => {});
+      if (kind === "sign-in") {
+        autoSetup.phase = "login";
+        autoStatus("sign in as the tenant admin in the worker tab");
+      } else if (autoSetup.phase === "login" && kind !== "other") {
+        autoSetup.adminAt = Date.now();
+        if (kind === "console") {
+          autoSetup.phase = "key";
+          autoStatus("building the key");
+        } else if (kind === "twofa") {
+          autoSetup.phase = "twofa";
+          autoStatus("enrolling the admin authenticator");
+        } else if (kind === "policy") {
+          autoSetup.phase = "policy";
+          autoStatus("setting the tenant 2SV policy");
         } else {
-          autoSetup.phoneShown = false;
-          renderAutoSetup();
+          autoSetup.phase = "tenant";
+          autoStatus("signed in — reading the tenant");
         }
+      } else if (kind === "twofa") {
+        autoStatus("enrolling the admin authenticator");
+      } else if (kind === "policy") {
+        autoStatus("setting the tenant 2SV policy");
+      } else if (kind === "console") {
+        autoStatus("building the key");
       }
+      renderAutoSetup();
     }
 
     if (!autoSetup.running || autoSetup.stop) break;
 
-    const onSignup = /^https:\/\/workspace\.google\.com\/gcpidentity\/signup/i.test(url);
-    let cdpMode = false;
+    await sendAutoHandoff(url);
 
-    if (cdpAvailable() && onSignup) {
-      if (!autoSetup.cdp && !autoSetup.cdpTried) {
-        autoSetup.cdpTried = true;
-        try {
-          await attachCdp(autoSetup.tabId);
-          autoSetup.cdp = true;
-          autoLog("debugger attached — trusted input for the signup");
-        } catch (error) {
-          autoLog(
-            `debugger attach failed: ${error.message || error} — using DOM input`,
-            "warn"
-          );
-        }
-      }
-      if (autoSetup.cdp) {
-        cdpMode = true;
-        try {
-          await api.tabs.sendMessage(autoSetup.tabId, {
-            type: "setup-fill",
-            profile: autoSetup.profile,
-            phase: autoSetup.phase,
-            cdp: true,
-          });
-        } catch (_) {
-          // content script not ready
-        }
-        try {
-          const result = await driveSignupTick(
-            autoSetup.tabId,
-            autoSetup.profile,
-            autoLog
-          );
-          if (result?.error) {
-            autoLog(result.error, "error");
-            autoStatus("Google refused the signup");
-            stopAutoSetup("Google refused the signup");
-            return;
-          }
-          if (result?.fatal) {
-            autoSetup.cdp = false;
-            await detachCdp(autoSetup.tabId);
-            autoLog(
-              `debugger stopped (${String(result.fatal).slice(0, 100)}) — using DOM input`,
-              "warn"
-            );
-            cdpMode = false;
-          }
-          if (result?.transient) {
-            autoLog(`cdp: page changed — waiting (${result.transient.slice(0, 90)})`, "info");
-          }
-          if (result?.done) {
-            autoSetup.cdp = false;
-            await detachCdp(autoSetup.tabId);
-            autoLog("signup form finished — debugger detached");
-            cdpMode = false;
-          }
-        } catch (error) {
-          autoSetup.cdp = false;
-          await detachCdp(autoSetup.tabId);
-          autoLog(
-            `trusted input stopped: ${error.message || error} — using DOM input`,
-            "warn"
-          );
-          cdpMode = false;
-        }
-      }
-    } else if (autoSetup.cdp) {
-      autoSetup.cdp = false;
-      await detachCdp(autoSetup.tabId);
-      autoLog("signup form finished — debugger detached");
-    }
-
-    if (!cdpMode) {
-      try {
-        await api.tabs.sendMessage(autoSetup.tabId, {
-          type: "setup-fill",
-          profile: autoSetup.profile,
-          phase: autoSetup.phase,
-          cdp: false,
-        });
-      } catch (_) {
-        // The content script is declared at document_idle; the next tick lands.
+    if (autoSetup.phase === "tenant") {
+      // A fresh sign-in can land on a terms or welcome interstitial. Give the
+      // content script a few ticks to clear it before changing pages.
+      if (!autoSetup.domainsOpened && Date.now() - autoSetup.adminAt > 3500) {
+        await openAutoDomains();
       }
     }
 
-    // myaccount.google.com has the existing 2SV wizard, which content/google.js
-    // already drives. Hand it the admin credentials there instead of duplicating
-    // that state machine in content/setup.js.
-    if (/^https:\/\/myaccount\.google\.com\//.test(url)) {
-      try {
-        await api.tabs.sendMessage(autoSetup.tabId, {
-          type: "google-fill",
-          email: autoSetup.profile.adminEmail,
-          password: autoSetup.profile.adminPassword,
-          code: "",
-          codes: [],
-          otp: "",
-        });
-      } catch (_) {
-        // google.js not ready yet
-      }
+    // A soft timeout on the billing catalogue. A tenant created through the
+    // Cloud Identity Free signup already has the product; if Google will not
+    // expose the state, do not strand the run there.
+    if (
+      autoSetup.phase === "billing" &&
+      autoSetup.billingAt &&
+      Date.now() - autoSetup.billingAt > 45_000
+    ) {
+      autoLog(
+        "Cloud Identity state did not become readable; continuing to the admin 2SV step",
+        "warn"
+      );
+      await goAutoAdmin2SV();
+    }
+
+    // The policy page is evidence-only here: the authenticator is already
+    // enrolled, so a missing signal must not block the key.
+    if (
+      autoSetup.phase === "policy" &&
+      autoSetup.policyAt &&
+      Date.now() - autoSetup.policyAt > 60_000
+    ) {
+      autoLog(
+        "2SV policy page did not confirm; continuing to the key — finish the policy manually if needed",
+        "warn"
+      );
+      await setSetup((draft) => {
+        draft.done.twostep = true;
+      });
+      await continueToKey();
+    }
+
+    if (
+      autoSetup.phase === "twofa" &&
+      autoSetup.twoStepAt &&
+      Date.now() - autoSetup.twoStepAt > 150_000
+    ) {
+      autoStatus("2SV wizard needs one manual step in the worker tab");
     }
 
     await sleep(1500);
   }
 }
 
-function paintAutoPhone(record, qr) {
-  const img = $("auto-qr");
-  if (img) {
-    if (qr) {
-      img.src = qr;
-      img.hidden = false;
-    } else {
-      img.removeAttribute("src");
-      img.hidden = true;
-    }
+async function handleAutoAdmin(message) {
+  const email = String(message.email || "").trim().toLowerCase();
+  if (!email) return;
+  const profile = autoProfile();
+  const domain = String(profile.domain || "").toLowerCase();
+  if (domain && !email.endsWith(`@${domain}`)) {
+    autoLog(
+      `the worker tab is signed in as ${email}, not @${domain} — stopping`,
+      "error"
+    );
+    autoStatus("wrong admin account — sign in as the tenant admin");
+    stopAutoSetup("wrong admin account");
+    return;
   }
-  setText(
-    "auto-qr-hint",
-    qr
-      ? "Scan this with your phone camera. For SMS, press Try another way and the number/message appear here."
-      : "The QR is in the setup tab — open it and scan from there."
-  );
-
-  const number = record.number || "";
-  const body = record.body || "";
-  setText("auto-phone-number", number || "—");
-  setText("auto-phone-body", body || "—");
-  setText(
-    "auto-phone-source",
-    record.page
-      ? `${record.source || "page"} · ${String(record.page).slice(0, 80)}`
-      : "waiting for Google"
-  );
-
-  const link = $("auto-phone-link");
-  if (link) {
-    if (record.payload && /^https?:\/\//i.test(record.payload)) {
-      link.href = record.payload;
-      link.hidden = false;
-    } else {
-      link.hidden = true;
-    }
-  }
-  const sms = $("auto-phone-sms");
-  if (sms) {
-    if (number) {
-      sms.href = `sms:${number}${body ? `?body=${encodeURIComponent(body)}` : ""}`;
-      sms.hidden = false;
-    } else {
-      sms.hidden = true;
-    }
-  }
-}
-
-async function scanAutoPhone() {
-  if (!autoSetup.tabId) return;
-  try {
-    const page = await scanTab(autoSetup.tabId);
-    const record = await extractFromPage(page);
-    const images = [
-      ...(page.canvases || []),
-      ...(page.images || []),
-      ...(page.svgs || []),
-    ].filter(Boolean);
-    let qr = "";
-    for (const candidate of images) {
-      try {
-        const decoded = await decodeImageUrl(candidate);
-        if (decoded) {
-          qr = candidate;
-          break;
-        }
-      } catch (_) {
-        // not a QR; try the next image
-      }
-    }
-    if (!qr && images.length) qr = images[0];
-    paintAutoPhone(record, qr);
-
-    if (record.number || record.body) {
-      autoLog(`phone gate: ${record.number || "?"} · ${record.body || "?"}`, "ok");
-      await savePhone(record);
-    } else if (record.payload) {
-      autoLog(`QR decodes to ${String(record.payload).slice(0, 140)}`);
-    } else if (looksLikeConsent(page)) {
-      autoLog("SMS consent page — pressing Send SMS");
-      await autoPressSendSms(autoSetup.tabId, { closeOnSuccess: false });
-      const phone = state.phone || {};
-      if (phone.number || phone.body) {
-        paintAutoPhone(
-          {
-            number: phone.number,
-            body: phone.body,
-            payload: phone.payload,
-            source: "consent",
-            page: page.url,
-          },
-          qr
-        );
-      }
-    } else {
-      autoLog("QR captured; no number/message in the image", "info");
-    }
-  } catch (error) {
-    autoLog(`phone scan failed: ${error.message || error}`, "warn");
-  }
+  if (autoSetup.adminEmail === email) return;
+  autoSetup.adminEmail = email;
+  autoSetup.adminAt = Date.now();
+  profile.adminEmail = email;
+  autoLog(`admin account detected: ${email}`, "ok");
+  await persistAutoState({ adminEmail: email });
   renderAutoSetup();
-}
-
-async function handleAutoPhone() {
-  autoSetup.phoneShown = true;
-  autoStatus("phone gate — complete it on your phone");
-  autoLog("phone gate reached; showing the QR / number");
-  renderAutoSetup();
-  await focusRunnerTab();
-  await scanAutoPhone();
-}
-
-async function handleAutoCaptcha() {
-  autoStatus("captcha — solve it in the setup tab");
-  autoLog("Google wants a captcha; the run resumes after you solve it", "warn");
-  const tab = await api.tabs.get(autoSetup.tabId).catch(() => null);
-  if (tab) await focusAutoTab(tab);
 }
 
 async function handleAutoDomain(message) {
@@ -3289,57 +3209,146 @@ async function handleAutoDomain(message) {
       if (rounds % 4 === 0) autoLog(`waiting for DNS propagation (${rounds})`);
     });
     if (!found.found) {
-      autoStatus("DNS record not visible");
-      autoLog("the TXT record did not appear in 90s — check DuckDNS and press Scan tab again", "error");
+      autoStatus("DNS record not visible yet");
+      autoLog(
+        "the TXT record did not appear in 90s — check DuckDNS, then press Scan tab again",
+        "error"
+      );
       return;
     }
-    autoStatus("verifying the domain");
-    autoLog("TXT record is visible; telling Google to verify");
-    await api.tabs.sendMessage(autoSetup.tabId, { type: "setup-domain-ready" });
+    await signalAutoDomainReady();
   } catch (error) {
     autoStatus("domain verification failed");
     autoLog(`domain verification failed: ${error.message || error}`, "error");
   }
 }
 
-async function continueToKey() {
-  if (!autoSetup.tabId) return;
-  autoSetup.phase = "key";
-  autoStatus("creating the Cloud project");
-  autoLog("opening Google Cloud project creation");
-  renderAutoSetup();
-  await api.tabs.update(autoSetup.tabId, { url: AUTO_PROJECT }).catch(() => {});
+async function handleAutoDomainStatus(message) {
+  if (!autoSetup.running) return;
+  if (message.found === false) {
+    if (Date.now() - autoSetup.domainAt < 15_000) {
+      return;
+    }
+    autoLog(
+      `the tenant does not list ${autoProfile().domain} — the worker tab is signed in to a different tenant`,
+      "error"
+    );
+    autoStatus("wrong tenant — sign in as the tenant admin");
+    stopAutoSetup("wrong tenant");
+    return;
+  }
+  if (message.verified) {
+    await handleAutoDomainVerified();
+    return;
+  }
+  if (!autoSetup.domainWarnAt || Date.now() - autoSetup.domainWarnAt > 15_000) {
+    autoSetup.domainWarnAt = Date.now();
+    autoLog(
+      "the domain is listed but not verified yet — waiting for the TXT record",
+      "warn"
+    );
+  }
 }
 
 async function handleAutoDomainVerified() {
-  autoLog("domain verified; opening Cloud Identity Free");
-  autoSetup.phase = "domain";
-  renderAutoSetup();
+  if (!autoSetup.running) return;
+  if (["billing", "twofa", "policy", "key", "done"].includes(autoSetup.phase)) return;
+  ensureAutoAdminLabel();
+  autoSetup.phase = "billing";
+  autoLog("domain verified", "ok");
   await setSetup((draft) => {
     draft.done.tenant = true;
   });
-  autoStatus("activating Cloud Identity Free");
+  autoSetup.billingAt = Date.now();
+  autoStatus("checking Cloud Identity Free");
+  renderAutoSetup();
   await api.tabs.update(autoSetup.tabId, { url: AUTO_BILLING }).catch(() => {});
 }
 
 async function handleAutoBillingDone() {
-  autoLog("Cloud Identity Free is active");
+  if (!autoSetup.running) return;
+  if (["twofa", "policy", "key", "done"].includes(autoSetup.phase)) return;
+  autoLog("Cloud Identity Free is active", "ok");
+  await setSetup((draft) => {
+    draft.done.tenant = true;
+  });
+  await goAutoAdmin2SV();
+}
+
+async function goAutoAdmin2SV() {
+  if (!autoSetup.tabId) return;
+  ensureAutoAdminLabel();
   autoSetup.phase = "twofa";
-  renderAutoSetup();
+  autoSetup.twoStepAt = Date.now();
   autoStatus("enrolling the admin authenticator");
+  renderAutoSetup();
   await api.tabs.update(autoSetup.tabId, { url: AUTO_ADMIN_2SV }).catch(() => {});
   autoLog(
-    "the admin's 2SV wizard is open; if it does not advance, finish it in the setup tab",
+    "the admin's 2SV wizard is open; if it needs a password or a code, finish it in the worker tab",
     "warn"
   );
 }
 
+async function onAdminTwoStepDone() {
+  await setSetup((draft) => {
+    draft.done.twostep = true;
+  });
+  if (["policy", "key", "done", "stopped"].includes(autoSetup.phase)) return;
+  if (!autoSetup.running) return;
+  autoLog("admin authenticator enrolled; opening the tenant 2SV policy", "ok");
+  await goAutoPolicy();
+}
+
+async function goAutoPolicy() {
+  if (!autoSetup.tabId) return;
+  if (["policy", "key", "done", "stopped"].includes(autoSetup.phase)) return;
+  ensureAutoAdminLabel();
+  autoSetup.phase = "policy";
+  autoSetup.policyAt = Date.now();
+  autoStatus("setting the tenant 2SV policy");
+  renderAutoSetup();
+  await api.tabs.update(autoSetup.tabId, { url: AUTO_2SV }).catch(() => {});
+}
+
+async function handleAutoTwoStepExisting(message = {}) {
+  await setSetup((draft) => {
+    draft.done.twostep = true;
+  });
+  if (message.secret) {
+    autoLog(
+      "admin 2SV is already on and the saved authenticator secret matches; setting the tenant policy",
+      "ok"
+    );
+    await goAutoPolicy();
+    return;
+  }
+  autoLog(
+    "admin 2SV is already on, but no authenticator secret was captured — leaving the policy untouched so a phone-only admin is not locked out",
+    "warn"
+  );
+  autoLog("continuing to the key; set the 2SV policy manually if the tenant needs it", "warn");
+  await continueToKey();
+}
+
 async function handleAutoPolicyDone() {
-  autoLog("2SV policy looks set");
+  if (!autoSetup.running) return;
+  if (!["policy", "twofa"].includes(autoSetup.phase)) return;
+  autoLog("2SV policy looks set", "ok");
   await setSetup((draft) => {
     draft.done.twostep = true;
   });
   await continueToKey();
+}
+
+async function continueToKey() {
+  if (!autoSetup.tabId) return;
+  ensureAutoAdminLabel();
+  autoSetup.phase = "key";
+  autoSetup.keyAt = Date.now();
+  autoStatus("creating the Cloud project");
+  autoLog("opening Google Cloud project creation");
+  renderAutoSetup();
+  await api.tabs.update(autoSetup.tabId, { url: AUTO_PROJECT }).catch(() => {});
 }
 
 async function addAutoKey(clientId, clientSecret) {
@@ -3355,9 +3364,9 @@ async function addAutoKey(clientId, clientSecret) {
       kind: "oauth_client",
       label: profile.domain || "auto setup",
       domain: profile.domain || "",
-      admin: profile.adminEmail || null,
-      admin_email: profile.adminEmail || null,
-      admin_password: profile.adminPassword || null,
+      admin: autoAdminEmail() || null,
+      admin_email: autoAdminEmail() || null,
+      admin_password: null,
       client_id: clientId,
       client_secret: clientSecret,
       refresh_token: null,
@@ -3373,6 +3382,7 @@ async function addAutoKey(clientId, clientSecret) {
 }
 
 async function handleAutoClient(message) {
+  ensureAutoAdminLabel();
   const clientId = String(message.client_id || "").trim();
   const clientSecret = String(message.client_secret || "").trim();
   if (!clientId || !clientSecret) return;
@@ -3388,29 +3398,31 @@ async function handleAutoClient(message) {
     return;
   }
 
-  await authorizeKey(key.id, {
+  const authorized = await authorizeKey(key.id, {
     storeId: autoSetup.storeId,
     autoConsent: true,
-    email: profile.adminEmail,
-    password: profile.adminPassword,
-    otp:
-      liveOtp.get(String(profile.adminEmail || "").toLowerCase()) ||
-      state.totp?.secret ||
-      "",
+    email: autoAdminEmail(),
+    password: "",
+    otp: autoAdminOtp(),
     timeout: 180_000,
   });
+
+  if (!authorized) {
+    autoStatus("consent was not completed — finish it in the consent tab");
+    autoLog(
+      "the key is in Keys but has no refresh token yet; press Authorize on its row when ready",
+      "warn"
+    );
+    return;
+  }
 
   await setSetup((draft) => {
     draft.done.key = true;
   });
-  autoLog("key authorized — automatic setup is done", "ok");
+  autoLog("key authorized — automatic finish is done", "ok");
   autoStatus("done — key ready");
   autoSetup.phase = "done";
   autoSetup.running = false;
-  if (autoSetup.cdp) {
-    autoSetup.cdp = false;
-    await detachCdp(autoSetup.tabId);
-  }
   if (autoSetup.tabId) {
     api.tabs
       .sendMessage(autoSetup.tabId, { type: "setup-stop" })
@@ -3421,90 +3433,31 @@ async function handleAutoClient(message) {
   switchTab("keys");
 }
 
-async function showManualDuckDns() {
-  await setSetup((draft) => {
-    draft.mode = "manual";
-    draft.open.dns = true;
-  });
-  switchTab("setup");
-  openStep("dns", true);
-}
-
-async function showAutomaticSetup() {
-  await setSetup((draft) => {
-    draft.mode = "auto";
-  });
-  switchTab("setup");
-  document
-    .getElementById("setup-auto-view")
-    ?.scrollIntoView({ block: "start", behavior: "smooth" });
+async function handleAutoCaptcha() {
+  autoStatus("captcha — solve it in the worker tab");
+  autoLog("Google wants a captcha; the run resumes after you solve it", "warn");
+  await focusAutoTab();
 }
 
 function wireAutoSetup() {
-  const pairs = [
-    ["auto-recovery", "recoveryEmail"],
-    ["auto-business", "businessName"],
-    ["auto-admin", "adminUser"],
-    ["auto-password", "adminPassword"],
-    ["auto-token", "token"],
-    ["auto-sub", "subdomain"],
-  ];
-  for (const [id, key] of pairs) {
-    const el = $(id);
-    if (!el) continue;
-    el.addEventListener("input", () => {
-      autoValues()[key] = el.value.trim();
-    });
-    el.addEventListener("change", () => {
-      persistAutoValues(readAutoFields()).catch(() => {});
-    });
-  }
-
-  for (const button of document.querySelectorAll("[data-random]")) {
-    button.addEventListener("click", async (event) => {
-      event.preventDefault();
-      const which = button.dataset.random;
-      const values = readAutoFields();
-      if (which === "businessName") values.businessName = makeBusinessName();
-      if (which === "adminUser") {
-        values.adminUser = `admin${1000 + Math.floor(Math.random() * 9000)}`;
-      }
-      if (which === "adminPassword") values.adminPassword = makeAdminPassword();
-      if (which === "subdomain") values.subdomain = randomSubdomain();
-      autoDraft = values;
-      const fields = {
-        businessName: "auto-business",
-        adminUser: "auto-admin",
-        adminPassword: "auto-password",
-        subdomain: "auto-sub",
-      };
-      const input = $(fields[which] || "");
-      if (input) input.value = values[which] || "";
-      renderAutoSetup();
-      await persistAutoValues(values);
-    });
-  }
-
   $("auto-start")?.addEventListener("click", () => {
     startAutoSetup().catch((error) =>
-      remember(`automatic setup: ${error.message || error}`, "error")
+      remember(`automatic finish: ${error.message || error}`, "error")
     );
   });
   $("auto-stop")?.addEventListener("click", () => stopAutoSetup("stopped by you"));
   $("auto-keys")?.addEventListener("click", () => switchTab("keys"));
-  document.querySelectorAll(".jump-manual-dns").forEach((button) => {
-    button.addEventListener("click", () => {
-      showManualDuckDns().catch(() => {});
-    });
-  });
-  document.querySelectorAll(".back-to-auto").forEach((button) => {
-    button.addEventListener("click", () => {
-      showAutomaticSetup().catch(() => {});
-    });
+  $("auto-manual")?.addEventListener("click", () => {
+    setSetup((draft) => {
+      draft.open.tenant = false;
+      draft.open.twostep = true;
+    })
+      .then(() => openStep("twostep", true))
+      .catch(() => {});
   });
   $("auto-continue")?.addEventListener("click", () => {
     continueToKey().catch((error) =>
-      remember(`automatic setup: ${error.message || error}`, "error")
+      remember(`automatic finish: ${error.message || error}`, "error")
     );
   });
   $("auto-credentials")?.addEventListener("click", () => {
@@ -3519,33 +3472,11 @@ function wireAutoSetup() {
       })
       .catch(() => {});
   });
-  $("auto-phone-refresh")?.addEventListener("click", () => {
-    scanAutoPhone().catch(() => {});
-  });
-  $("auto-phone-try")?.addEventListener("click", async () => {
-    try {
-      await api.tabs.sendMessage(autoSetup.tabId, {
-        type: "setup-try-another-way",
-      });
-    } catch (_) {
-      // content script gone
-    }
-    await sleep(1200);
-    await scanAutoPhone();
-  });
 }
 
 function wireSetup() {
   const panel = $("panel-setup");
   if (!panel) return;
-
-  panel.querySelectorAll("[data-setup-mode]").forEach((button) => {
-    button.addEventListener("click", () => {
-      setSetup((draft) => {
-        draft.mode = button.dataset.setupMode;
-      }).catch(() => {});
-    });
-  });
 
   panel.addEventListener("click", (event) => {
     // The tick is a real checkbox; let its change event do the work.
@@ -3644,15 +3575,6 @@ function wireSecretToggles() {
 }
 
 function wire() {
-  if (api.debugger?.onDetach) {
-    api.debugger.onDetach.addListener((source) => {
-      if (autoSetup.cdp && source?.tabId === autoSetup.tabId) {
-        autoSetup.cdp = false;
-        autoLog("debugger detached — using DOM input", "warn");
-      }
-    });
-  }
-
   document.querySelectorAll(".tab").forEach((tab) => {
     tab.addEventListener("click", () => {
       document.querySelectorAll(".tab").forEach((node) => node.classList.toggle("active", node === tab));
@@ -4177,29 +4099,39 @@ function wire() {
         `${email || "account"}: authenticator ${message.enrolled ? "enrolled" : "secret saved"}`,
         "ok"
       );
-      if (
-        message.enrolled &&
-        autoSetup.running &&
-        autoSetup.profile &&
-        autoSetup.tabId &&
-        email === String(autoSetup.profile.adminEmail || "").toLowerCase()
-      ) {
-        autoLog("admin authenticator enrolled; opening the tenant 2SV policy");
-        autoStatus("setting the tenant 2SV policy");
-        setSetup((draft) => {
-          draft.done.twostep = true;
-        }).catch(() => {});
-        api.tabs.update(autoSetup.tabId, { url: AUTO_2SV }).catch(() => {});
+      const admin = autoAdminEmail();
+      const domain = String(autoSetup.profile?.domain || "").toLowerCase();
+      const sameAdmin = admin
+        ? email === admin
+        : Boolean(domain && email.endsWith(`@${domain}`));
+      if (message.enrolled && autoSetup.running && autoSetup.tabId && sameAdmin) {
+        onAdminTwoStepDone().catch((error) =>
+          autoLog(`admin 2SV: ${error.message || error}`, "error")
+        );
       }
+    }
+    if (message?.type === "google-2sv" && message.enrolled) {
+      const email = String(message.email || "").toLowerCase();
+      const admin = autoAdminEmail();
+      const domain = String(autoSetup.profile?.domain || "").toLowerCase();
+      const sameAdmin = admin
+        ? email === admin
+        : Boolean(domain && email.endsWith(`@${domain}`));
+      if (autoSetup.running && autoSetup.tabId && sameAdmin) {
+        handleAutoTwoStepExisting(message).catch((error) =>
+          autoLog(`admin 2SV: ${error.message || error}`, "error")
+        );
+      }
+      return false;
+    }
+    if (message?.type === "setup-admin" && message.email) {
+      handleAutoAdmin(message).catch((error) =>
+        autoLog(`admin account: ${error.message || error}`, "error")
+      );
+      return false;
     }
     if (message?.type === "setup-report" && message.text) {
       autoLog(String(message.text), message.level || "info");
-      return false;
-    }
-    if (message?.type === "setup-phone") {
-      handleAutoPhone().catch((error) =>
-        autoLog(`phone gate: ${error.message || error}`, "error")
-      );
       return false;
     }
     if (message?.type === "setup-captcha") {
@@ -4208,6 +4140,12 @@ function wire() {
     }
     if (message?.type === "setup-domain" && message.token) {
       handleAutoDomain(message).catch((error) =>
+        autoLog(`domain: ${error.message || error}`, "error")
+      );
+      return false;
+    }
+    if (message?.type === "setup-domain-status") {
+      handleAutoDomainStatus(message).catch((error) =>
         autoLog(`domain: ${error.message || error}`, "error")
       );
       return false;

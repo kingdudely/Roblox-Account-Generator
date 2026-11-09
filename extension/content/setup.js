@@ -1,8 +1,8 @@
 // language: JavaScript, file: content/setup.js
-// Drives the Cloud Identity signup and the first half of the Google Cloud
-// console. It is deliberately one-way: the runner owns the phase and supplies
-// the profile, and this script only fills/clicks the page in front of it. The
-// phone gate and any captcha are reported and left to the operator.
+// Finishes a tenant in the Admin console and the Google Cloud console. It is
+// deliberately one-way: the runner owns the phase and supplies the profile, and
+// this script only fills/clicks the page in front of it. The Workspace signup is
+// manual; this script starts once the user lands in the Admin console.
 //
 // It runs everywhere the setup tab can land, but does nothing until the runner
 // sends `setup-fill`. That keeps it out of the lane tabs.
@@ -22,9 +22,7 @@
     lastAt: 0,
     lastUrl: "",
     reported: new Set(),
-    phoneSent: false,
     captchaSent: false,
-    tryAnotherWay: false,
     domainToken: "",
     domainReady: false,
     billingSent: false,
@@ -35,7 +33,8 @@
     projectSent: false,
     paused: false,
     lastHandoff: 0,
-    cdp: false,
+    adminSent: "",
+    domainStatusAt: 0,
   };
 
   const visible = (el) => {
@@ -153,40 +152,10 @@
     );
   }
 
-  function passwordInputs() {
-    return [...document.querySelectorAll('input[type="password"]')].filter(visible);
-  }
-
   function fillIfEmpty(input, value) {
     if (!input || !value) return false;
     if (String(input.value || "").trim()) return false;
     return fill(input, value);
-  }
-
-  function selectOption(select, pattern) {
-    if (!select) return false;
-    const wanted = [...select.options].find((option) =>
-      pattern.test(`${option.textContent || ""} ${option.value || ""}`)
-    );
-    if (!wanted) return false;
-    select.value = wanted.value;
-    select.dispatchEvent(new Event("change", { bubbles: true }));
-    return true;
-  }
-
-  function maybePhoneGate(url, body) {
-    if (
-      /\/challenge\/iap\/qrcode/i.test(url) ||
-      /scan the qr code with your phone/i.test(body)
-    ) {
-      if (!state.phoneSent) {
-        state.phoneSent = true;
-        note("phone gate reached — focus the setup tab and scan the QR / send the SMS");
-        send({ type: "setup-phone", url, text: (document.body?.innerText || "").slice(0, 1200) });
-      }
-      return true;
-    }
-    return false;
   }
 
   function maybeCaptcha(body) {
@@ -219,180 +188,106 @@
     return true;
   }
 
-  // -------------------------------------------------------------- signup funnel
-
-  function signupTick(body) {
-    // Chrome's automatic path drives these pages through CDP Input, which
-    // produces trusted events. Do not fill or click from here at the same time.
-    if (state.cdp) return;
-
-    const path = location.pathname.replace(/\/+$/, "");
-
-    if (maybePhoneGate(location.href, body)) return;
-    if (maybeCaptcha(body)) return;
-
-    if (/\/gcpidentity\/signup$/i.test(path)) {
-      const business =
-        document.querySelector('input[aria-label*="Business name" i]') || textInputs()[0];
-      if (business && business.value !== state.profile.businessName) {
-        fill(business, state.profile.businessName);
-      }
-
-      const radios = [...document.querySelectorAll('input[type="radio"]')];
-      if (radios.length && !radios.some((radio) => radio.checked)) {
-        const radio = radios.find((item) => visible(item)) || radios[0];
-        const label =
-          radio.closest("label") ||
-          (radio.id ? document.querySelector(`label[for="${radio.id}"]`) : null);
-        (label || radio).click();
-      }
-      const select = [...document.querySelectorAll("select")].find(visible);
-      if (select && !select.value) selectOption(select, /united states|us/i);
-
-      if (business && String(business.value || "").trim()) {
-        act("signup-start", () => clickByText(["next"], CONTROLS));
-      }
-      return;
-    }
-
-    if (/\/signup\/contact$/i.test(path)) {
-      const inputs = textInputs();
-      if (inputs[0] && inputs[0].value !== state.profile.firstName) {
-        fill(inputs[0], state.profile.firstName);
-      }
-      if (inputs[1] && inputs[1].value !== state.profile.lastName) {
-        fill(inputs[1], state.profile.lastName);
-      }
-      const email = document.querySelector('input[type="email"]');
-      if (email && email.value !== state.profile.recoveryEmail) {
-        fill(email, state.profile.recoveryEmail);
-      }
-      const ready = inputs[0]?.value && inputs[1]?.value && email?.value;
-      if (ready) act("contact-next", () => clickByText(["next"], CONTROLS));
-      return;
-    }
-
-    if (/\/signup\/bring$/i.test(path)) {
-      const input = textInputs()[0];
-      if (input && input.value !== state.profile.domain) {
-        fill(input, state.profile.domain);
-      }
-      if (input?.value) act("bring-next", () => clickByText(["next"], CONTROLS));
-      return;
-    }
-
-    if (/\/signup\/bringconfirm$/i.test(path)) {
-      act("bringconfirm-next", () => clickByText(["next"], CONTROLS));
-      return;
-    }
-
-    if (/\/signup\/account$/i.test(path)) {
-      if (/creating your account|please wait/i.test(body)) return;
-      const inputs = textInputs();
-      const username = inputs[0];
-      if (username && username.value !== state.profile.adminUser) {
-        fill(username, state.profile.adminUser);
-      }
-      for (const input of passwordInputs()) {
-        if (input.value !== state.profile.adminPassword) {
-          fill(input, state.profile.adminPassword);
-        }
-      }
-      const passwords = passwordInputs();
-      const ready =
-        username?.value &&
-        passwords.length >= 2 &&
-        passwords.every((input) => String(input.value || "").trim());
-      if (ready) {
-        act("account-create", () =>
-          clickExact(["agree and continue", "agree & continue"], CONTROLS)
-        );
-      }
-      return;
-    }
-
-    if (/\/verify\//i.test(path)) {
-      if (maybeDomainToken()) {
-        if (state.domainReady) {
-          act("verify-domain", () => clickByText(["verify", "continue"], CONTROLS));
-        }
-        return;
-      }
-      act("verify-next", () =>
-        clickByText(["next", "continue", "get started", "verify"], CONTROLS)
-      );
-      return;
-    }
-
-    // The signup flow can park on a plain accounts.google.com password page
-    // after "Agree and continue". Handle that here too.
-    act("signup-idle", () =>
-      clickByText(["next", "continue", "get started", "i understand"], CONTROLS)
-    );
-  }
-
   // ------------------------------------------------------------------ accounts
 
   function accountsTick(body) {
-    if (maybePhoneGate(location.href, body)) {
-      if (state.tryAnotherWay) {
-        act("try-another-way", () =>
-          clickByText(["try another way", "more ways to verify"], CONTROLS)
-        );
-      }
-      return;
-    }
-
-    if (state.tryAnotherWay) {
-      act("pick-sms", () =>
-        clickByText(
-          ["text message", "send sms", "sms", "phone"],
-          'button,[role="button"],[role="radio"],li,a'
-        )
-      );
-      return;
-    }
-
-    if (/\/signin\/challenge\/pwd/i.test(location.href) || /enter your password/i.test(body)) {
-      const field = document.querySelector('input[name="Passwd"], input[type="password"]');
-      fillIfEmpty(field, state.profile.adminPassword);
-      if (maybeCaptcha(body)) return;
-      if (field?.value) act("admin-password", () => clickByText(["next"], CONTROLS));
-      return;
-    }
-
-    if (/\/signin\/identifier/i.test(location.href)) {
-      const email = document.querySelector('input[type="email"], input[name="identifier"]');
-      fillIfEmpty(email, state.profile.adminEmail);
-      if (email?.value) act("admin-identifier", () => clickByText(["next"], CONTROLS));
-      return;
-    }
-
+    // The automatic branch never has the admin password. Do not touch the
+    // identifier, account chooser or password fields: the operator signs in.
+    // The one safe action is clearing a terms/speed-bump interstitial so the
+    // worker tab can reach the Admin console.
     if (/speedbump|terms/i.test(location.href) || /i understand/i.test(body)) {
-      act("speedbump", () => clickByText(["i understand", "continue", "accept"], CONTROLS));
-      return;
+      act("speedbump", () =>
+        clickByText(["i understand", "continue", "accept"], CONTROLS)
+      );
     }
-
-    // A consent screen in the same tab (the OAuth client authorization is
-    // handled by the runner, but this covers the signup Continue page).
-    act("accounts-idle", () =>
-      clickByText(["continue", "allow", "next", "i understand", "got it"], CONTROLS)
-    );
   }
 
-  // ------------------------------------------------------------------- admin
+  // ------------------------------------------------------------- account/domain
+
+  function emailsOnPage() {
+    const values = [];
+    for (const el of document.querySelectorAll(
+      "[aria-label],[title],[data-email],[data-identifier],[data-authuser]"
+    )) {
+      values.push(
+        el.getAttribute("aria-label") || "",
+        el.getAttribute("title") || "",
+        el.getAttribute("data-email") || "",
+        el.getAttribute("data-identifier") || "",
+        el.getAttribute("data-authuser") || ""
+      );
+    }
+    values.push(document.body ? document.body.innerText || "" : "");
+    const emails = new Set();
+    for (const value of values) {
+      for (const match of String(value).matchAll(
+        /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi
+      )) {
+        emails.add(match[0].toLowerCase());
+      }
+    }
+    return [...emails];
+  }
+
+  function detectAdmin() {
+    const domain = String(state.profile?.domain || "").toLowerCase();
+    if (!domain) return;
+    const expected = emailsOnPage().find((email) => email.endsWith(`@${domain}`));
+    if (!expected || state.adminSent === expected) return;
+    state.adminSent = expected;
+    note(`admin account detected: ${expected}`, "ok");
+    send({ type: "setup-admin", email: expected, domain, url: location.href });
+  }
+
+  function reportDomainStatus(body) {
+    const domain = String(state.profile?.domain || "").toLowerCase();
+    if (!domain) return false;
+    const now = Date.now();
+    if (state.domainStatusAt && now - state.domainStatusAt < 3500) return false;
+    state.domainStatusAt = now;
+
+    const found = body.includes(domain);
+    const notVerified =
+      /not verified|unverified|verification (?:is )?(?:pending|required)|verify (?:your )?domain/i.test(
+        body
+      );
+    const verified =
+      /domain is verified|domain verified|verification successful|your domain is verified/i.test(
+        body
+      ) ||
+      (found && /\bverified\b/i.test(body) && !notVerified);
+    send({
+      type: "setup-domain-status",
+      domain,
+      found,
+      verified,
+      url: location.href,
+    });
+    if (verified && !state.domainVerifiedSent) {
+      state.domainVerifiedSent = true;
+      note("domain verified — moving on", "ok");
+      send({ type: "setup-domain-verified", domain });
+    }
+    return true;
+  }
 
   function adminTick(body) {
+    detectAdmin();
+
     if (maybeDomainToken()) {
       if (state.domainReady) {
         act("admin-verify-domain", () =>
           clickByText(["verify domain", "verify", "continue"], CONTROLS)
         );
       }
-      if (/domain is verified|domain verified|verification successful|verified/i.test(body)) {
+      if (
+        /domain is verified|domain verified|verification successful|your domain is verified/i.test(
+          body
+        )
+      ) {
         if (!state.domainVerifiedSent) {
           state.domainVerifiedSent = true;
-          note("domain verified — moving on");
+          note("domain verified — moving on", "ok");
           send({ type: "setup-domain-verified", domain: state.profile?.domain || "" });
         }
       }
@@ -400,12 +295,12 @@
     }
 
     if (/\/ac\/domains\/manage/i.test(location.pathname)) {
-      if (/domain is verified|domain verified|verification successful/i.test(body)) {
-        if (!state.domainVerifiedSent) {
-          state.domainVerifiedSent = true;
-          note("domain verified — moving on");
-          send({ type: "setup-domain-verified", domain: state.profile?.domain || "" });
-        }
+      reportDomainStatus(body);
+      if (
+        /domain is verified|domain verified|verification successful|your domain is verified/i.test(
+          body
+        )
+      ) {
         return;
       }
       act("admin-domains-open", () =>
@@ -415,10 +310,13 @@
     }
 
     if (/\/ac\/billing\/catalog/i.test(location.pathname)) {
-      if (/cloud identity free/i.test(body) && /manage|active|subscribed|you.re subscribed/i.test(body)) {
+      const active =
+        /cloud identity free/i.test(body) &&
+        /(active|subscribed|manage|your subscription|you.re subscribed)/i.test(body);
+      if (active) {
         if (!state.billingSent) {
           state.billingSent = true;
-          note("Cloud Identity Free is active");
+          note("Cloud Identity Free is active", "ok");
           send({ type: "setup-billing-done" });
         }
         return;
@@ -426,18 +324,24 @@
       act("billing-open", () => {
         return (
           clickExact(["cloud identity"], CONTROLS) ||
-          clickByText(["cloud identity"], CONTROLS) ||
-          clickByText(["cloud identity free", "get started", "start", "free"], CONTROLS)
+          clickByText(
+            ["cloud identity free", "get started", "start", "subscribe"],
+            CONTROLS
+          ) ||
+          clickByText(["cloud identity"], CONTROLS)
         );
       });
       return;
     }
 
     if (/\/ac\/security\/2sv/i.test(location.pathname)) {
-      if (/any except verification codes via text, phone call/i.test(body) && /enforcement/i.test(body)) {
+      if (
+        /any except verification codes via text, phone call/i.test(body) &&
+        /enforcement/i.test(body)
+      ) {
         if (!state.policySent) {
           state.policySent = true;
-          note("2SV policy looks set (enforcement + methods)");
+          note("2SV policy looks set (enforcement + methods)", "ok");
           send({ type: "setup-policy-done" });
         }
         return;
@@ -455,8 +359,6 @@
       act("policy-save", () => clickByText(["save", "done", "continue"], CONTROLS));
       return;
     }
-
-    act("admin-idle", () => clickByText(["next", "continue", "get started"], CONTROLS));
   }
 
   // ------------------------------------------------------------------ console
@@ -480,6 +382,7 @@
   }
 
   function consoleTick(body) {
+    detectAdmin();
     const project = extractProjectId();
     if (project) {
       state.projectId = project;
@@ -606,8 +509,8 @@
     if (url !== state.lastUrl) {
       state.lastUrl = url;
       state.reported = new Set();
-      state.phoneSent = false;
       state.captchaSent = false;
+      state.domainStatusAt = 0;
       state.lastAction = "";
       note(`page ${url.slice(0, 140)}`);
     }
@@ -615,12 +518,10 @@
     const body = bodyText();
     const host = location.hostname;
 
+    if (maybeCaptcha(body)) return;
+
     if (host.endsWith("accounts.google.com")) {
       accountsTick(body);
-      return;
-    }
-    if (host === "workspace.google.com" || host.endsWith(".workspace.google.com")) {
-      signupTick(body);
       return;
     }
     if (host === "admin.google.com") {
@@ -645,7 +546,6 @@
     if (message.type === "setup-fill") {
       state.profile = message.profile || state.profile;
       state.phase = message.phase || "";
-      state.cdp = Boolean(message.cdp);
       state.paused = false;
       state.lastHandoff = Date.now();
       if (message.profile?.adminEmail) state.profile.adminEmail = message.profile.adminEmail;
@@ -664,13 +564,6 @@
       state.domainReady = true;
       note("DuckDNS record is visible — telling Google to verify");
       sendResponse({ ok: true });
-      return true;
-    }
-
-    if (message.type === "setup-try-another-way") {
-      state.tryAnotherWay = true;
-      const hit = clickByText(["try another way", "more ways to verify"], CONTROLS);
-      sendResponse({ ok: Boolean(hit), hit });
       return true;
     }
 

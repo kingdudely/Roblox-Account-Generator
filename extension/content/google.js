@@ -42,6 +42,7 @@
     enrolled: false,
     settingsAuthStarted: false,
     setupStarted: false,
+    existingTwoStep: false,
     reported: new Set(),
   };
 
@@ -553,6 +554,13 @@
     // password
     const passwordInput = document.querySelector('input[type="password"]');
     if (passwordInput && visible(passwordInput)) {
+      // The automatic setup branch does not ask for the admin password. When it
+      // is empty, the operator types it in the worker tab; do not submit an
+      // empty field or count it as a rejected password.
+      if (!password) {
+        once("password-wait", "waiting for the admin password in the worker tab");
+        return;
+      }
       if (passwordInput.value !== password) {
         if (state.fills.password >= 3) {
           once("password-stuck", "password rejected repeatedly — the identity password does not match");
@@ -719,6 +727,36 @@
         if (hit) once("interstitial", `accepted: ${hit}`);
         return hit;
       });
+      return;
+    }
+
+    // The admin may already have 2SV from before this run. Without the secret
+    // there is no safe way to change the tenant policy: a phone-only admin
+    // would be locked out. Report it and let the runner skip the policy step.
+    if (
+      !state.otpSecret &&
+      /(2|two)-step verification is on|2-step verification is turned on/i.test(body)
+    ) {
+      if (!state.existingTwoStep) {
+        state.existingTwoStep = true;
+        const hasSecret = Boolean(state.creds.otp);
+        note(
+          hasSecret
+            ? "admin 2SV is already on; using the saved authenticator secret"
+            : "admin 2SV is already on; no authenticator secret to capture"
+        );
+        try {
+          api.runtime.sendMessage({
+            type: "google-2sv",
+            email: state.creds.email || "",
+            enrolled: true,
+            existing: true,
+            secret: hasSecret,
+          });
+        } catch (_) {
+          // extension context gone
+        }
+      }
       return;
     }
 
@@ -1115,6 +1153,7 @@
         state.enrolled = false;
         state.settingsAuthStarted = false;
         state.setupStarted = false;
+        state.existingTwoStep = false;
         state.kept = "";
         state.reported = new Set();
         state.lastAction = "";

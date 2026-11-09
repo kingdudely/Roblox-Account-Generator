@@ -2,11 +2,12 @@
 
 > **Historical.** This was written for the Python tooling, which is no longer in
 > the tree; it remains in the Git history. [`README.md`](../README.md) describes
-> the Chrome extension, which is the current path. The extension now uses
-> `chrome.debugger` for trusted input on the automatic signup. The Firefox /
-> container sections below are legacy notes; Chrome has one lane per profile.
-> The measurements, failure modes and console evidence in this document are
-> still accurate.
+> the Firefox extension, which is the current path. The Workspace tenant signup
+> stays manual: Google's anti-spam system rejects automated signup, including
+> trusted-input browser automation. The extension can finish an existing tenant
+> from a signed-in Admin console tab. The container notes below still apply to
+> the Firefox lane model; Chrome has one lane per profile. The measurements,
+> failure modes and console evidence in this document are still accurate.
 
 This is the path that skips the captcha entirely. Not solved, not bypassed —
 **never asked**. Roblox's "Sign in with Google" flow creates an account from a

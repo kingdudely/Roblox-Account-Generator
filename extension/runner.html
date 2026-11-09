@@ -200,153 +200,44 @@
 
           <!-- SETUP ---------------------------------------------------------------->
           <div class="tabpanel" id="panel-setup">
-            <div class="card setup-mode-card">
-              <div class="card-head">
-                <h2>Setup method</h2>
-                <span class="hint">pick one &mdash; the manual steps stay available</span>
-              </div>
-              <div class="setup-modes" role="tablist" aria-label="Setup method">
-                <button class="btn setup-mode" data-setup-mode="buy" role="tab">Buy a key</button>
-                <button class="btn setup-mode" data-setup-mode="manual" role="tab">Manual</button>
-                <button class="btn setup-mode" data-setup-mode="auto" role="tab">Automatic</button>
-              </div>
-              <p class="note" id="setup-mode-note"></p>
-            </div>
-
             <div class="card setup-banner" id="setup-buy-view">
-              <p>DM <b>g_oose</b> or <b>kingdudely</b> on Discord to buy a pre-made key!</p>
-              <p class="note">
-                Ask for <span class="mono">client_id</span>,
+              <p>
+                <b>Short on time?</b> DM <b>g_oose</b> or <b>kingdudely</b> on Discord for a
+                ready key &mdash; <span class="mono">client_id</span>,
                 <span class="mono">client_secret</span> and
-                <span class="mono">refresh_token</span>, then paste them in <b>Keys</b>.
-                The key is already backed by a funded tenant, so there is no signup,
-                no phone gate, and no OAuth client to build.
+                <span class="mono">refresh_token</span>, pasted in <b>Keys</b>. No tenant,
+                signup or phone gate.
               </p>
               <div class="buttons">
                 <button class="btn tiny jump-tab" data-tab="keys">Go to Keys</button>
               </div>
             </div>
 
-            <div class="card setup-auto" id="setup-auto-view">
-              <div class="card-head">
-                <h2>Automatic setup</h2>
-                <span class="hint" id="auto-status">idle</span>
+            <div class="auto-run" id="auto-run" hidden>
+              <div class="auto-run-head">
+                <div>
+                  <h3>Automatic finish</h3>
+                  <p class="note" id="auto-status">idle</p>
+                </div>
+                <span class="auto-pill" id="auto-phase">idle</span>
+              </div>
+              <ol class="auto-tasks">
+                <li data-auto-task="admin"><i></i><span>Admin sign-in</span><em>waiting</em></li>
+                <li data-auto-task="tenant"><i></i><span>Domain + Cloud Identity</span><em>waiting</em></li>
+                <li data-auto-task="twostep"><i></i><span>Admin 2SV + policy</span><em>waiting</em></li>
+                <li data-auto-task="key"><i></i><span>OAuth key</span><em>waiting</em></li>
+              </ol>
+              <div class="buttons">
+                <button id="auto-stop" class="btn danger" disabled>Stop</button>
+                <button id="auto-continue" class="btn tiny ghost" disabled>Skip to key</button>
+                <button id="auto-credentials" class="btn tiny ghost" disabled>Open credentials</button>
+                <button id="auto-keys" class="btn tiny ghost" disabled>Go to Keys</button>
               </div>
               <p class="note">
-                Fill the fields below; the extension opens Google's Cloud Identity
-                signup, fills the forms, verifies the domain through DuckDNS, and
-                pauses only for the phone gate (and a captcha if Google asks). It
-                prefers an <b>Internal</b> OAuth app so the key does not expire
-                after seven days.
+                If one page stalls, finish that page in the worker tab; the run picks the
+                next signal back up automatically.
               </p>
-
-              <div class="helper">
-                <div class="helper-head">
-                  <h3>DuckDNS account</h3>
-                  <span class="hint">required</span>
-                </div>
-                <p class="note">
-                  Need a subdomain and token? Use <b>How to make a DuckDNS
-                  account</b> for the full steps in Manual step 1, then paste
-                  both below.
-                </p>
-                <div class="substep-actions">
-                  <button class="btn tiny ghost jump-manual-dns">How to make a DuckDNS account</button>
-                </div>
-              </div>
-
-              <div class="helper">
-                <div class="helper-head">
-                  <h3>Tenant details</h3>
-                </div>
-                <div class="controls">
-                  <label class="field">
-                    <span>Recovery email</span>
-                    <input id="auto-recovery" type="email" placeholder="you@gmail.com" />
-                  </label>
-                  <label class="field">
-                    <span>DuckDNS token</span>
-                    <input id="auto-token" type="password" autocomplete="off" placeholder="account token" />
-                  </label>
-                  <label class="field">
-                    <span>DuckDNS subdomain</span>
-                    <input id="auto-sub" placeholder="farm" />
-                    <button type="button" class="random-link" data-random="subdomain">suggest</button>
-                  </label>
-                </div>
-                <div class="auto-divider"></div>
-                <div class="controls">
-                  <label class="field">
-                    <span>Business name</span>
-                    <input id="auto-business" placeholder="Nova Harbor Supply" />
-                    <button type="button" class="random-link" data-random="businessName">random</button>
-                  </label>
-                  <label class="field">
-                    <span>Admin username</span>
-                    <input id="auto-admin" placeholder="admin" />
-                    <button type="button" class="random-link" data-random="adminUser">random</button>
-                  </label>
-                  <label class="field">
-                    <span>Admin password</span>
-                    <input id="auto-password" type="password" autocomplete="off" />
-                    <button type="button" class="random-link" data-random="adminPassword">random</button>
-                  </label>
-                </div>
-              </div>
-
-              <div class="buttons">
-                <button id="auto-start" class="btn primary">Start automatic setup</button>
-                <button id="auto-stop" class="btn danger" disabled>Stop</button>
-              </div>
-
-              <div class="auto-fallback-row" id="auto-fallback">
-                <div class="fallback-head">
-                  <span>Manual fallback</span>
-                  <span class="hint">only if the automatic flow stalls</span>
-                </div>
-                <div class="buttons">
-                  <button id="auto-continue" class="btn tiny ghost" disabled>Skip to Cloud project</button>
-                  <button id="auto-credentials" class="btn tiny ghost" disabled>Open Google credentials</button>
-                  <button id="auto-keys" class="btn tiny ghost" disabled>Go to Keys</button>
-                </div>
-              </div>
-
-              <div class="auto-phone" id="auto-phone" hidden>
-                <div class="card-head">
-                  <h2>Phone gate</h2>
-                  <span class="hint" id="auto-phone-source">waiting for Google</span>
-                </div>
-                <div class="auto-phone-grid">
-                  <div class="auto-qr-wrap">
-                    <img id="auto-qr" alt="Phone verification QR code" />
-                    <p class="note" id="auto-qr-hint">The QR appears when Google asks for it.</p>
-                  </div>
-                  <div class="auto-phone-copy">
-                    <div class="gate-row">
-                      <div class="card-head">
-                        <h2>Number</h2>
-                        <button class="btn tiny ghost copy" data-copy-target="auto-phone-number">Copy</button>
-                      </div>
-                      <div id="auto-phone-number" class="bigvalue mono">&mdash;</div>
-                    </div>
-                    <div class="gate-row">
-                      <div class="card-head">
-                        <h2>Message</h2>
-                        <button class="btn tiny ghost copy" data-copy-target="auto-phone-body">Copy</button>
-                      </div>
-                      <div id="auto-phone-body" class="bigvalue mono">&mdash;</div>
-                    </div>
-                    <div class="buttons">
-                      <button id="auto-phone-refresh" class="btn tiny ghost">Scan tab again</button>
-                      <button id="auto-phone-try" class="btn tiny ghost">Try another way</button>
-                      <a id="auto-phone-link" class="btn tiny ghost" target="_blank" rel="noreferrer" hidden>Open link</a>
-                      <a id="auto-phone-sms" class="btn tiny ghost" hidden>Open SMS</a>
-                    </div>
-                  </div>
-                </div>
-              </div>
             </div>
-
             <div class="card setup-progress">
               <div class="card-head">
                 <h2>Setup</h2>
@@ -420,12 +311,9 @@
                   </li>
                 </ol>
                 <p class="note">
-                  Doing this from the Automatic tab? The extension can create the
-                  tenant, verify the domain and build the key for you.
+                  Step 2 uses this token and subdomain to write the verification record.
+                  Keep them saved here; the optional automatic branch reads the same pair.
                 </p>
-                <div class="substep-actions">
-                  <button class="btn tiny ghost back-to-auto">Back to Automatic setup</button>
-                </div>
               </div>
             </section>
 
@@ -540,6 +428,28 @@
                   <button class="btn tiny link-out" data-href="https://admin.google.com/ac/billing/catalog">Open Billing</button>
                   <button class="btn tiny link-out" data-href="https://admin.google.com/ac/domains/manage">Open Domains</button>
                 </div>
+
+                <div class="helper setup-branch" id="setup-branch">
+                  <div class="helper-head">
+                    <h3>Already in the Admin console?</h3>
+                    <span class="hint">optional shortcut</span>
+                  </div>
+                  <p class="note">
+                    Finish steps 3 and 4 from one new tab. You sign in once as the tenant admin;
+                    the extension checks the domain, activates Cloud Identity Free, enrols the
+                    admin authenticator, sets the 2SV policy and builds the key. Each finished
+                    task ticks its step here.
+                  </p>
+                  <div class="buttons">
+                    <button id="auto-start" class="btn primary">Automate from here</button>
+                    <button id="auto-manual" class="btn ghost">Continue manually</button>
+                  </div>
+                  <p class="note">
+                    The admin password is never asked for, stored or typed. Sign-in happens in
+                    the new tab, and the extension takes over after it lands in the Admin console.
+                  </p>
+                </div>
+
               </div>
             </section>
 
