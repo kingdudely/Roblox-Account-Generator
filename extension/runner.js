@@ -669,6 +669,7 @@ async function addKeys(text, source = "pasted") {
 
   await remember(`${parsed.keys.length} key(s) from ${source}`, "ok");
   await refresh();
+  if (state.keys.length) markSubstepDone("run.key").catch(() => {});
 
   for (const key of parsed.keys) {
     if (key.needs_consent) {
@@ -731,6 +732,7 @@ async function authorizeKey(id, options = {}) {
     await refresh();
     await remember(`${key.label}: consent granted`, "ok");
     await checkKey(id);
+    markSubstepDone("run.key").catch(() => {});
     return true;
   } catch (error) {
     await remember(`${key.label}: ${error.message || error}`, "error");
@@ -2334,6 +2336,19 @@ async function saveDuck(fields) {
   state = await load();
   renderDuckdns();
   renderSetup();
+  const credentialsSaved = Boolean(
+    state.duckdns?.token && state.duckdns?.subdomain
+  );
+  const credentialsEntry = substepEntry("dns.credentials");
+  if (credentialsSaved && !credentialsEntry) {
+    markSubstepDone("dns.credentials").catch(() => {});
+  } else if (!credentialsSaved && credentialsEntry?.done) {
+    setSubstep("dns.credentials", {
+      done: false,
+      status: "manual",
+      error: "",
+    }).catch(() => {});
+  }
 }
 
 function duckInputs() {
@@ -2379,7 +2394,7 @@ async function duckWrite() {
 
     if (result.found) {
       await remember(`TXT is live on ${fullDomain(sub)}`, "ok");
-      if (autoSetup.running && autoSetup.phase === "tenant") {
+      if (autoSetup.current === "tenant.verify") {
         await signalAutoDomainReady();
       }
     } else {
@@ -2411,7 +2426,7 @@ async function duckCheck() {
       : "no TXT answer";
     await saveDuck({ answer, checked_at: new Date().toISOString() });
     await remember(`${fullDomain(sub)}: ${answer}`, hit ? "ok" : "warn");
-    if (hit && autoSetup.running && autoSetup.phase === "tenant") {
+    if (hit && autoSetup.current === "tenant.verify") {
       await signalAutoDomainReady();
     }
     await refreshChecklist();
@@ -2560,12 +2575,246 @@ async function refreshChecklist() {
 // Tickable steps. "limits" is reference material and is never counted.
 const SETUP_TICKABLE = ["dns", "tenant", "twostep", "key", "run"];
 
+function substepEntry(id) {
+  return state.setup?.substeps?.[id] || null;
+}
+
+function isSubstepDone(id) {
+  const entry = substepEntry(id);
+  if (entry) return Boolean(entry.done);
+  const def = SUBSTEP_BY_ID[id];
+  // Older state only had the step-level ticks. A completed step therefore
+  // starts with all of its sub-steps checked.
+  return Boolean(def && state.setup?.done?.[def.step]);
+}
+
+function substepStatus(id) {
+  const entry = substepEntry(id);
+  if (entry?.status === "running") return "running";
+  if (entry?.status === "failed") return "failed";
+  if (isSubstepDone(id)) return "done";
+  if (
+    autoSetup.running &&
+    (autoSetup.current === id || autoSetup.queue.includes(id))
+  ) {
+    return "queued";
+  }
+  return SUBSTEP_BY_ID[id]?.auto ? "auto" : "manual";
+}
+
+function missingSubstepDeps(id) {
+  return (SUBSTEP_BY_ID[id]?.requires || []).filter((dep) => !isSubstepDone(dep));
+}
+
+function autoProjectId() {
+  return autoSetup.projectId || String(state.setup?.auto?.projectId || "");
+}
+
+function policyBlocked() {
+  return (
+    autoSetup.policySafe === false || state.setup?.auto?.policySafe === false
+  );
+}
+
+function substepBlockedReason(id) {
+  const missing = missingSubstepDeps(id);
+  if (missing.length) {
+    return `needs: ${missing.map((dep) => SUBSTEP_BY_ID[dep]?.label || dep).join(", ")}`;
+  }
+  if (
+    ["key.admin-sdk", "key.consent", "key.client"].includes(id) &&
+    !autoProjectId()
+  ) {
+    return "run Create the Cloud project with Auto first";
+  }
+  if (id === "twostep.policy" && policyBlocked()) {
+    return "admin 2SV was already on without a saved authenticator secret — set the policy manually only if another allowed factor exists";
+  }
+  return "";
+}
+
+async function migrateSubsteps() {
+  const existing = state.setup?.substeps || {};
+  const done = state.setup?.done || {};
+  const additions = {};
+  for (const def of SUBSTEPS) {
+    if (existing[def.id]) {
+      if (existing[def.id].status === "running") {
+        additions[def.id] = {
+          ...existing[def.id],
+          status: "failed",
+          error: "the runner reloaded before this sub-step finished",
+        };
+      }
+      continue;
+    }
+    if (done[def.step]) {
+      additions[def.id] = { done: true, status: "done", error: "" };
+      continue;
+    }
+    if (
+      def.id === "dns.credentials" &&
+      state.duckdns?.token &&
+      state.duckdns?.subdomain
+    ) {
+      additions[def.id] = { done: true, status: "done", error: "" };
+    }
+  }
+  if (!Object.keys(additions).length) return;
+  await mutate((draft) => {
+    const merged = { ...(draft.setup.substeps || {}), ...additions };
+    draft.setup.substeps = merged;
+    draft.setup.done = { ...(draft.setup.done || {}) };
+    for (const [step, ids] of Object.entries(STEP_SUBSTEPS)) {
+      draft.setup.done[step] = ids.every((id) => Boolean(merged[id]?.done));
+    }
+  });
+  state = await load();
+}
+
+async function setSubstep(id, patch) {
+  await mutate((draft) => {
+    draft.setup.substeps = { ...(draft.setup.substeps || {}) };
+    draft.setup.substeps[id] = {
+      ...(draft.setup.substeps[id] || {}),
+      ...patch,
+    };
+  });
+  state = await load();
+  const def = SUBSTEP_BY_ID[id];
+  if (def?.step) await syncStepDone(def.step);
+  else renderSetup();
+}
+
+async function markSubstepDone(id) {
+  await setSubstep(id, { done: true, status: "done", error: "" });
+}
+
+async function syncStepDone(step) {
+  const ids = STEP_SUBSTEPS[step] || [];
+  if (!ids.length) {
+    renderSetup();
+    return;
+  }
+  const done = ids.every((id) => isSubstepDone(id));
+  if (Boolean(state.setup?.done?.[step]) !== done) {
+    await mutate((draft) => {
+      draft.setup.done = { ...(draft.setup.done || {}), [step]: done };
+    });
+    state = await load();
+  }
+  renderSetup();
+}
+
+async function setAllSubsteps(step, done) {
+  const ids = STEP_SUBSTEPS[step] || [];
+  if (!ids.length) return;
+  await mutate((draft) => {
+    draft.setup.substeps = { ...(draft.setup.substeps || {}) };
+    for (const id of ids) {
+      const def = SUBSTEP_BY_ID[id];
+      draft.setup.substeps[id] = {
+        ...(draft.setup.substeps[id] || {}),
+        done,
+        status: done ? "done" : def?.auto ? "auto" : "manual",
+        error: "",
+      };
+    }
+    draft.setup.done = { ...(draft.setup.done || {}), [step]: done };
+  });
+  state = await load();
+  renderSetup();
+}
+
+function decorateSubsteps() {
+  for (const li of document.querySelectorAll(".step-actions > li[data-substep]")) {
+    if (li.querySelector(".substep-head")) continue;
+    const id = li.dataset.substep;
+    const def = SUBSTEP_BY_ID[id];
+    if (!def) continue;
+
+    const head = document.createElement("div");
+    head.className = "substep-head";
+
+    const label = document.createElement("label");
+    label.className = "substep-tick";
+    label.title = "mark this sub-step done";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.dataset.substepDone = id;
+    box.setAttribute("aria-label", `${def.label}: done`);
+    label.append(box);
+
+    const chip = document.createElement("span");
+    chip.className = "substep-state";
+    chip.dataset.substepState = id;
+    chip.textContent = def.auto ? "auto" : "manual";
+
+    head.append(label, chip);
+
+    if (def.auto) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "btn tiny ghost auto-substep";
+      button.dataset.automateSubstep = id;
+      button.textContent = "Auto";
+      head.append(button);
+    }
+
+    li.prepend(head);
+  }
+}
+
+function renderSubsteps() {
+  for (const li of document.querySelectorAll(".step-actions > li[data-substep]")) {
+    const id = li.dataset.substep;
+    const def = SUBSTEP_BY_ID[id];
+    if (!def) continue;
+
+    const done = isSubstepDone(id);
+    li.dataset.done = String(done);
+
+    const box = li.querySelector("[data-substep-done]");
+    if (box) box.checked = done;
+
+    const chip = li.querySelector("[data-substep-state]");
+    const status = substepStatus(id);
+    if (chip) {
+      chip.textContent = status;
+      chip.dataset.state = status;
+    }
+
+    const button = li.querySelector("[data-automate-substep]");
+    if (button) {
+      const reason = substepBlockedReason(id);
+      button.disabled = autoSetup.running || Boolean(reason);
+      button.textContent = done ? "Redo" : "Auto";
+      button.title = reason
+        ? reason
+        : done
+        ? "run this sub-step again"
+        : `run ${def.label}`;
+    }
+
+    const entry = substepEntry(id);
+    let error = li.querySelector(".substep-error");
+    if (!error) {
+      error = document.createElement("p");
+      error.className = "note substep-error";
+      li.querySelector(".substep-head")?.after(error);
+    }
+    error.textContent = entry?.error || "";
+    error.hidden = !entry?.error;
+  }
+}
+
 function setupState() {
   const setup = state.setup || {};
   return {
     done: setup.done || {},
     open: setup.open || {},
     hideDone: Boolean(setup.hideDone),
+    substeps: setup.substeps || {},
   };
 }
 
@@ -2638,6 +2887,8 @@ function renderSetup() {
     pill.dataset.state = "ok";
   }
 
+  renderSubsteps();
+
   setText("setup-count", `${complete} of ${SETUP_TICKABLE.length} done`);
   const bar = $("setup-bar");
   if (bar) bar.style.width = `${Math.round((complete / SETUP_TICKABLE.length) * 100)}%`;
@@ -2670,14 +2921,145 @@ const AUTO_ADMIN_2SV =
   "https://myaccount.google.com/signinoptions/two-step-verification";
 const AUTO_2SV = "https://admin.google.com/ac/security/2sv";
 const AUTO_PROJECT = "https://console.cloud.google.com/projectcreate";
+const AUTO_ADMIN_SDK =
+  "https://console.cloud.google.com/apis/library/admin.googleapis.com";
+const AUTO_CONSENT =
+  "https://console.cloud.google.com/apis/credentials/consent";
+const AUTO_CREDENTIALS =
+  "https://console.cloud.google.com/apis/credentials";
+
+// The setup checklist. Every sub-step is a checkbox in the UI; tasks with
+// `auto: true` also get an Auto button. `requires` gates both the button and
+// the batch order. `batch: false` keeps a task out of "Automate remaining"
+// while still allowing its own Auto button.
+const SUBSTEPS = [
+  { id: "dns.account", step: "dns", label: "Create the DuckDNS account and subdomain" },
+  { id: "dns.token", step: "dns", label: "Copy the DuckDNS account token" },
+  { id: "dns.credentials", step: "dns", label: "Save the DuckDNS token and subdomain" },
+
+  { id: "tenant.signup", step: "tenant", label: "Create the Cloud Identity tenant" },
+  { id: "tenant.about", step: "tenant", label: "Fill in About you" },
+  { id: "tenant.business", step: "tenant", label: "Fill in About your business" },
+  { id: "tenant.domain-name", step: "tenant", label: "Enter the DuckDNS domain" },
+  { id: "tenant.admin", step: "tenant", label: "Create the admin account / phone gate" },
+  {
+    id: "tenant.verify",
+    step: "tenant",
+    label: "Write the TXT record and verify the domain",
+    auto: true,
+    batch: true,
+    requires: ["dns.credentials"],
+    timeout: 180_000,
+  },
+  { id: "tenant.agreement", step: "tenant", label: "Accept the Cloud Identity Agreement" },
+  {
+    id: "tenant.cloud-identity",
+    step: "tenant",
+    label: "Activate Cloud Identity Free",
+    auto: true,
+    batch: true,
+    requires: ["tenant.verify"],
+    timeout: 75_000,
+  },
+
+  { id: "twostep.open", step: "twostep", label: "Open the admin 2SV settings" },
+  {
+    id: "twostep.enroll",
+    step: "twostep",
+    label: "Enrol the admin authenticator app",
+    auto: true,
+    batch: true,
+    requires: ["tenant.verify"],
+    timeout: 210_000,
+  },
+  {
+    id: "twostep.policy",
+    step: "twostep",
+    label: "Set the tenant 2SV policy",
+    auto: true,
+    batch: true,
+    requires: ["twostep.enroll"],
+    timeout: 95_000,
+  },
+
+  {
+    id: "key.project",
+    step: "key",
+    label: "Create the Cloud project",
+    auto: true,
+    batch: true,
+    requires: ["tenant.verify"],
+    timeout: 130_000,
+  },
+  {
+    id: "key.admin-sdk",
+    step: "key",
+    label: "Enable the Admin SDK",
+    auto: true,
+    batch: true,
+    requires: ["key.project"],
+    timeout: 100_000,
+  },
+  {
+    id: "key.consent",
+    step: "key",
+    label: "Set up the OAuth consent screen",
+    auto: true,
+    batch: true,
+    requires: ["key.project"],
+    timeout: 130_000,
+  },
+  { id: "key.scopes", step: "key", label: "Add the five OAuth scopes" },
+  {
+    id: "key.client",
+    step: "key",
+    label: "Create the desktop OAuth client",
+    auto: true,
+    batch: true,
+    requires: ["key.consent", "key.scopes"],
+    timeout: 160_000,
+  },
+  {
+    id: "key.authorize",
+    step: "key",
+    label: "Authorize the key",
+    auto: true,
+    batch: true,
+    requires: ["key.client", "key.admin-sdk"],
+    timeout: 240_000,
+  },
+
+  { id: "run.key", step: "run", label: "Add the key in Keys" },
+  {
+    id: "run.check",
+    step: "run",
+    label: "Check the key",
+    auto: true,
+    batch: false,
+    requires: [],
+    timeout: 45_000,
+    local: true,
+  },
+  { id: "run.first", step: "run", label: "Run one identity" },
+  { id: "run.export", step: "run", label: "Export accounts" },
+];
+
+const SUBSTEP_BY_ID = Object.fromEntries(SUBSTEPS.map((entry) => [entry.id, entry]));
+const STEP_SUBSTEPS = SUBSTEPS.reduce((map, entry) => {
+  (map[entry.step] ||= []).push(entry.id);
+  return map;
+}, {});
 
 // The automatic branch never creates the tenant or the DuckDNS name. It opens
-// one worker tab, waits for the user to sign in as the tenant admin, then does
-// the mechanical work: domain check, Cloud Identity, admin 2SV/policy and the
-// OAuth key. The user's own Admin console tab is never touched.
+// one worker tab, waits for the user to sign in as the tenant admin, then runs
+// the checked sub-steps: domain, Cloud Identity, admin 2SV/policy and the key.
+// The user's own Admin console tab is never touched.
 const autoSetup = {
   running: false,
   stop: false,
+  batch: false,
+  queue: [],
+  current: "",
   tabId: null,
   storeId: null,
   profile: null,
@@ -2686,21 +3068,26 @@ const autoSetup = {
   lastUrl: "",
   adminEmail: "",
   adminAt: 0,
-  domainAt: 0,
-  billingAt: 0,
-  twoStepAt: 0,
-  policyAt: 0,
-  keyAt: 0,
   domainsOpened: false,
   domainReadyPending: false,
   domainWarnAt: 0,
   projectId: "",
+  pendingKeyId: "",
+  policySafe: true,
+  taskStartedAt: 0,
+  taskAttempted: false,
+  signedIn: false,
+  handoffPaused: false,
+  blocked: null,
+  endedOnKey: false,
 };
 
 function autoValues() {
   const saved = state.setup?.auto || {};
   const duck = state.duckdns || {};
-  const subdomain = String(saved.subdomain || duck.subdomain || "")
+  const subdomain = String(
+    saved.subdomain || duck.subdomain || suggestedSubdomain() || ""
+  )
     .trim()
     .toLowerCase()
     .replace(/\.duckdns\.org$/, "")
@@ -2786,12 +3173,10 @@ function autoPhaseLabel(phase) {
     {
       idle: "idle",
       login: "sign-in",
-      tenant: "tenant",
-      billing: "Cloud Identity",
-      twofa: "admin 2SV",
-      policy: "policy",
-      key: "key",
+      running: "running",
+      paused: "paused",
       done: "done",
+      failed: "failed",
       stopped: "stopped",
     }[phase] || phase
   );
@@ -2808,9 +3193,11 @@ function renderAutoSetup() {
 
   const done = state.setup?.done || {};
   const tasks = {
-    admin: ["tenant", "billing", "twofa", "policy", "key", "done"].includes(
-      autoSetup.phase
-    ),
+    admin:
+      autoSetup.signedIn ||
+      Boolean(
+        autoSetup.tabId && !["idle", "login", "stopped"].includes(autoSetup.phase)
+      ),
     tenant: Boolean(done.tenant),
     twostep: Boolean(done.twostep),
     key: Boolean(done.key),
@@ -2824,20 +3211,17 @@ function renderAutoSetup() {
     }
   }
 
-  const start = $("auto-start");
-  if (start) start.disabled = autoSetup.running;
+  for (const id of ["auto-start", "auto-start-top"]) {
+    const start = $(id);
+    if (!start) continue;
+    start.disabled = autoSetup.running;
+    start.textContent = autoSetup.running ? "Running…" : "Automate remaining";
+  }
   const stop = $("auto-stop");
   if (stop) stop.disabled = !autoSetup.running;
-  const skip = $("auto-continue");
-  if (skip) {
-    skip.disabled = !(
-      autoSetup.tabId && ["tenant", "twofa", "policy", "key"].includes(autoSetup.phase)
-    );
-  }
-  const credentials = $("auto-credentials");
-  if (credentials) credentials.disabled = !autoSetup.projectId;
   const keys = $("auto-keys");
   if (keys) keys.disabled = !autoSetup.tabId;
+  renderSubsteps();
 }
 
 async function ensureSetupContainer() {
@@ -2857,109 +3241,229 @@ async function ensureSetupContainer() {
   }
 }
 
+async function ensureAutoWorker() {
+  if (autoSetup.tabId) {
+    const existing = await api.tabs.get(autoSetup.tabId).catch(() => null);
+    if (existing) return autoSetup.tabId;
+  }
+  if (!autoSetup.storeId) autoSetup.storeId = await ensureSetupContainer();
+  const options = { url: AUTO_ADMIN, active: true };
+  if (autoSetup.storeId) options.cookieStoreId = autoSetup.storeId;
+  const tab = await api.tabs.create(options);
+  if (!tab) throw new Error("the setup tab did not open");
+  return tab.id;
+}
+
+function buildBatchQueue() {
+  const willDone = new Set(
+    SUBSTEPS.filter((entry) => isSubstepDone(entry.id)).map((entry) => entry.id)
+  );
+  const queue = [];
+  const skipped = [];
+  let blocked = null;
+  for (const def of SUBSTEPS) {
+    if (!def.auto || !def.batch || willDone.has(def.id)) continue;
+    if (def.id === "twostep.policy" && policyBlocked()) {
+      // The authenticator is not available for this admin, so the policy is
+      // unsafe to change automatically. Skip it and keep the key tasks moving.
+      skipped.push(def.id);
+      continue;
+    }
+    const missing = (def.requires || []).filter((dep) => !willDone.has(dep));
+    if (missing.length) {
+      blocked = { id: def.id, missing };
+      break;
+    }
+    queue.push(def.id);
+    willDone.add(def.id);
+  }
+  return { queue, blocked, skipped };
+}
+
+function missingSubstepLabels(ids) {
+  return ids.map((id) => SUBSTEP_BY_ID[id]?.label || id);
+}
+
 async function startAutoSetup() {
   if (autoSetup.running) {
     await remember("automatic finish is already running", "warn");
     return;
   }
 
-  const values = autoValues();
-  const token = String(values.token || "").trim();
-  const subdomain = String(values.subdomain || "")
-    .trim()
-    .toLowerCase()
-    .replace(/\.duckdns\.org$/, "")
-    .replace(/[^a-z0-9-]/g, "");
-  const domain = subdomain ? fullDomain(subdomain) : "";
+  const { queue, blocked, skipped } = buildBatchQueue();
+  if (!queue.length) {
+    if (blocked) {
+      const labels = missingSubstepLabels(blocked.missing).join(", ");
+      await remember(
+        `auto-run is waiting on a manual sub-step: ${labels}`,
+        "warn"
+      );
+      openStep(SUBSTEP_BY_ID[blocked.missing[0]]?.step || "tenant", true);
+    } else if (skipped.length) {
+      await remember(
+        `manual check needed: ${missingSubstepLabels(skipped).join(", ")}`,
+        "warn"
+      );
+      openStep(SUBSTEP_BY_ID[skipped[0]]?.step || "twostep", true);
+    } else {
+      await remember("every automatable sub-step is already checked", "info");
+    }
+    return;
+  }
 
-  if (!token) {
+  const values = autoValues();
+  if (!values.subdomain) {
+    await remember("save the DuckDNS subdomain in step 1 first", "error");
+    await setSetup((draft) => {
+      draft.open.dns = true;
+    });
+    openStep("dns", true);
+    return;
+  }
+  if (queue.includes("tenant.verify") && !values.token) {
     await remember(
-      "automatic finish needs the DuckDNS token from step 1 — save it first",
+      "automatic domain verification needs the DuckDNS token from step 1",
       "error"
     );
-    await setSetup((draft) => {
-      draft.open.dns = true;
-    });
-    openStep("dns", true);
-    return;
-  }
-  if (!/^[a-z0-9-]{1,63}$/.test(subdomain)) {
-    await remember("automatic finish needs the DuckDNS subdomain from step 1", "error");
-    await setSetup((draft) => {
-      draft.open.dns = true;
-    });
     openStep("dns", true);
     return;
   }
 
+  await beginAutoRun(queue, true, blocked);
+}
+
+async function runSubstep(id) {
+  if (autoSetup.running) {
+    await remember("automatic finish is already running", "warn");
+    return;
+  }
+  const def = SUBSTEP_BY_ID[id];
+  if (!def?.auto) return;
+
+  const blockedReason = substepBlockedReason(id);
+  if (blockedReason) {
+    await remember(blockedReason, "warn");
+    const missing = missingSubstepDeps(id);
+    if (missing.length) openStep(SUBSTEP_BY_ID[missing[0]]?.step || def.step, true);
+    return;
+  }
+
+  if (def.local) {
+    await runLocalSubstep(def);
+    return;
+  }
+
+  const values = autoValues();
+  if (!values.subdomain) {
+    await remember("save the DuckDNS subdomain in step 1 first", "error");
+    openStep("dns", true);
+    return;
+  }
+  if (id === "tenant.verify" && !values.token) {
+    await remember("domain verification needs the DuckDNS token from step 1", "error");
+    openStep("dns", true);
+    return;
+  }
+  await beginAutoRun([id], false, null);
+}
+
+async function beginAutoRun(queue, batch, blocked) {
+  const values = autoValues();
+  const subdomain = values.subdomain;
+  const domain = subdomain ? fullDomain(subdomain) : "";
   const previous = state.setup?.auto || {};
   const previousAdmin = String(previous.adminEmail || "").toLowerCase();
-  const seededAdmin = previousAdmin.endsWith(`@${domain}`) ? previousAdmin : "";
-  autoSetup.profile = {
-    ...values,
-    token,
-    subdomain,
-    domain,
-    adminEmail: seededAdmin,
-    adminPassword: "",
-  };
+  const seededAdmin = domain && previousAdmin.endsWith(`@${domain}`) ? previousAdmin : "";
 
   autoSetup.running = true;
   autoSetup.stop = false;
-  autoSetup.tabId = null;
+  autoSetup.batch = Boolean(batch);
+  autoSetup.queue = [...queue];
+  autoSetup.current = "";
+  autoSetup.tabId = autoSetup.tabId || null;
   autoSetup.phase = "login";
   autoSetup.status = "opening the Admin console";
   autoSetup.lastUrl = "";
   autoSetup.adminEmail = seededAdmin;
   autoSetup.adminAt = 0;
-  autoSetup.domainAt = 0;
-  autoSetup.billingAt = 0;
-  autoSetup.twoStepAt = 0;
-  autoSetup.policyAt = 0;
-  autoSetup.keyAt = 0;
   autoSetup.domainsOpened = false;
   autoSetup.domainReadyPending = false;
   autoSetup.domainWarnAt = 0;
-  autoSetup.projectId = "";
-  autoSetup.storeId = await ensureSetupContainer();
-
-  await persistAutoState({
-    token,
+  const previousProject = String(previous.projectId || "");
+  autoSetup.projectId =
+    previousProject && String(previous.subdomain || "") === subdomain
+      ? previousProject
+      : "";
+  autoSetup.pendingKeyId = "";
+  autoSetup.policySafe =
+    String(previous.subdomain || "") === subdomain
+      ? previous.policySafe !== false
+      : true;
+  autoSetup.taskStartedAt = 0;
+  autoSetup.taskAttempted = false;
+  autoSetup.signedIn = false;
+  autoSetup.handoffPaused = false;
+  autoSetup.blocked = blocked || null;
+  autoSetup.endedOnKey = false;
+  autoSetup.profile = {
+    ...values,
+    token: values.token,
     subdomain,
     domain,
-    adminEmail: autoSetup.adminEmail,
+    adminEmail: seededAdmin,
+    adminPassword: "",
+  };
+  autoSetup.storeId = autoSetup.storeId || (await ensureSetupContainer());
+
+  await persistAutoState({
+    token: values.token,
+    subdomain,
+    domain,
+    adminEmail: seededAdmin,
     projectName: autoSetup.profile.projectName,
-    phase: "login",
+    projectId: autoSetup.projectId,
+    policySafe: autoSetup.policySafe,
+    phase: queue.length === 1 ? queue[0] : "batch",
   });
   await refresh();
   switchTab("setup");
   autoLog(
-    `automatic finish started for ${domain}; sign in as the tenant admin in the new tab`
+    batch
+      ? `automatic run started with ${queue.length} sub-step(s)`
+      : `automatic sub-step started: ${SUBSTEP_BY_ID[queue[0]]?.label || queue[0]}`
   );
   renderAutoSetup();
 
   try {
-    const options = { url: AUTO_ADMIN, active: true };
-    if (autoSetup.storeId) options.cookieStoreId = autoSetup.storeId;
-    const tab = await api.tabs.create(options);
-    if (!tab) throw new Error("the setup tab did not open");
-    autoSetup.tabId = tab.id;
+    autoSetup.tabId = await ensureAutoWorker();
+    await focusAutoTab();
     renderAutoSetup();
     autoSetupLoop().catch((error) =>
       autoLog(`setup loop stopped: ${error.message || error}`, "error")
     );
   } catch (error) {
     autoSetup.running = false;
-    autoSetup.status = "could not open the Admin console tab";
-    autoLog(`could not open the Admin console tab: ${error.message || error}`, "error");
+    autoSetup.phase = "failed";
+    autoSetup.status = `could not open the Admin console tab: ${error.message || error}`;
+    autoLog(autoSetup.status, "error");
     renderAutoSetup();
   }
 }
 
 function stopAutoSetup(reason = "stopped") {
+  const current = autoSetup.current;
   autoSetup.running = false;
   autoSetup.stop = true;
+  autoSetup.current = "";
+  autoSetup.queue = [];
   autoSetup.phase = "stopped";
+  autoSetup.handoffPaused = true;
+  if (current) {
+    setSubstep(current, {
+      status: isSubstepDone(current) ? "done" : SUBSTEP_BY_ID[current]?.auto ? "auto" : "manual",
+      error: "",
+    }).catch(() => {});
+  }
   if (autoSetup.tabId) {
     api.tabs
       .sendMessage(autoSetup.tabId, { type: "setup-stop" })
@@ -2995,7 +3499,7 @@ async function focusRunnerTab() {
 
 function autoTabKind(url) {
   if (/accounts\.google\.com/.test(url)) return "sign-in";
-  if (/^https:\/\/admin\.google\.com\/ac\/domains\/manage/i.test(url)) return "domains";
+  if (/^https:\/\/admin\.google\.com\/ac\/domains/i.test(url)) return "domains";
   if (/^https:\/\/admin\.google\.com\/ac\/billing/i.test(url)) return "billing";
   if (/^https:\/\/admin\.google\.com\/ac\/security\/2sv/i.test(url)) return "policy";
   if (/^https:\/\/admin\.google\.com\//i.test(url)) return "admin";
@@ -3005,13 +3509,14 @@ function autoTabKind(url) {
 }
 
 async function signalAutoDomainReady() {
+  if (autoSetup.current !== "tenant.verify") return;
   autoSetup.domainReadyPending = true;
   autoStatus("verifying the domain");
   autoLog("TXT record is visible; telling Google to verify");
   const tab = await api.tabs.get(autoSetup.tabId).catch(() => null);
   if (
     tab &&
-    !/^https:\/\/admin\.google\.com\/ac\/domains\/manage/i.test(tab.url || "")
+    !/^https:\/\/admin\.google\.com\/ac\/domains/i.test(tab.url || "")
   ) {
     await api.tabs.update(autoSetup.tabId, { url: AUTO_DOMAINS }).catch(() => {});
   }
@@ -3024,6 +3529,7 @@ async function signalAutoDomainReady() {
 }
 
 async function sendAutoHandoff(url) {
+  if (autoSetup.handoffPaused) return;
   const profile = autoProfile();
   if (
     /^https:\/\/admin\.google\.com\//i.test(url) ||
@@ -3038,7 +3544,7 @@ async function sendAutoHandoff(url) {
           adminEmail: autoAdminEmail(),
           recoveryEmail: autoAdminEmail() || profile.recoveryEmail,
         },
-        phase: autoSetup.phase,
+        phase: autoSetup.current || autoSetup.phase,
       });
       if (autoSetup.domainReadyPending) {
         await api.tabs.sendMessage(autoSetup.tabId, {
@@ -3067,20 +3573,115 @@ async function sendAutoHandoff(url) {
   }
 }
 
-async function openAutoDomains() {
-  if (autoSetup.domainsOpened || !autoSetup.tabId) return;
+function autoTaskUrl(id) {
+  switch (id) {
+    case "tenant.verify":
+      return AUTO_DOMAINS;
+    case "tenant.cloud-identity":
+      return AUTO_BILLING;
+    case "twostep.enroll":
+      return AUTO_ADMIN_2SV;
+    case "twostep.policy":
+      return AUTO_2SV;
+    case "key.project":
+      return AUTO_PROJECT;
+    case "key.admin-sdk": {
+      const project = autoProjectId();
+      return project
+        ? `${AUTO_ADMIN_SDK}?project=${encodeURIComponent(project)}`
+        : "";
+    }
+    case "key.consent": {
+      const project = autoProjectId();
+      return project
+        ? `${AUTO_CONSENT}?project=${encodeURIComponent(project)}`
+        : "";
+    }
+    case "key.client": {
+      const project = autoProjectId();
+      return project
+        ? `${AUTO_CREDENTIALS}?project=${encodeURIComponent(project)}`
+        : "";
+    }
+    default:
+      return "";
+  }
+}
+
+async function beginAutoTask(id) {
+  const def = SUBSTEP_BY_ID[id];
+  if (!def) {
+    await failAutoTask(id, "unknown sub-step");
+    return;
+  }
   ensureAutoAdminLabel();
-  autoSetup.domainsOpened = true;
-  autoSetup.domainAt = Date.now();
-  autoStatus("checking the domain");
-  await api.tabs.update(autoSetup.tabId, { url: AUTO_DOMAINS }).catch(() => {});
+  autoSetup.current = id;
+  autoSetup.taskStartedAt = Date.now();
+  autoSetup.taskAttempted = false;
+  autoSetup.handoffPaused = id === "key.authorize";
+  if (id === "key.project") {
+    autoSetup.projectId = "";
+    persistAutoState({ projectId: "" }).catch(() => {});
+  }
+  await setSubstep(id, { status: "running", error: "" });
+  autoStatus(`running · ${def.label}`);
+  autoLog(`sub-step: ${def.label}`, "step");
+  renderAutoSetup();
+
+  if (id === "key.authorize") {
+    runAuthorizeTask(id).catch((error) => failAutoTask(id, error.message || error));
+    return;
+  }
+
+  const url = autoTaskUrl(id);
+  if (!url) {
+    await failAutoTask(
+      id,
+      id === "key.admin-sdk" || id === "key.consent" || id === "key.client"
+        ? "no Cloud project id yet — run Create the Cloud project first"
+        : "this sub-step has no automatic page"
+    );
+    return;
+  }
+  autoSetup.taskAttempted = true;
+  await api.tabs.update(autoSetup.tabId, { url }).catch(() => {});
+}
+
+async function autoTaskTick() {
+  const id = autoSetup.current;
+  if (!id) return;
+  const def = SUBSTEP_BY_ID[id];
+  if (!def) return;
+
+  if (!autoSetup.taskAttempted && id !== "key.authorize") {
+    const url = autoTaskUrl(id);
+    if (url) {
+      autoSetup.taskAttempted = true;
+      autoSetup.taskStartedAt = Date.now();
+      await api.tabs.update(autoSetup.tabId, { url }).catch(() => {});
+    }
+  }
+
+  if (def.timeout && Date.now() - autoSetup.taskStartedAt > def.timeout) {
+    await failAutoTask(
+      id,
+      `timed out after ${Math.round(def.timeout / 1000)}s — finish it in the worker tab or retry`
+    );
+  }
 }
 
 async function autoSetupLoop() {
   while (autoSetup.running && !autoSetup.stop) {
     const tab = await api.tabs.get(autoSetup.tabId).catch(() => null);
     if (!tab) {
-      stopAutoSetup("the worker tab was closed");
+      if (autoSetup.current) {
+        await failAutoTask(autoSetup.current, "the worker tab was closed");
+      } else {
+        autoSetup.running = false;
+        autoSetup.phase = "failed";
+        autoStatus("the worker tab was closed");
+        renderAutoSetup();
+      }
       return;
     }
 
@@ -3089,87 +3690,204 @@ async function autoSetupLoop() {
     if (url !== autoSetup.lastUrl) {
       autoSetup.lastUrl = url;
       autoLog(`at ${url.slice(0, 150)}`);
-      if (kind === "sign-in") {
-        autoSetup.phase = "login";
-        autoStatus("sign in as the tenant admin in the worker tab");
-      } else if (autoSetup.phase === "login" && kind !== "other") {
-        autoSetup.adminAt = Date.now();
-        if (kind === "console") {
-          autoSetup.phase = "key";
-          autoStatus("building the key");
-        } else if (kind === "twofa") {
-          autoSetup.phase = "twofa";
-          autoStatus("enrolling the admin authenticator");
-        } else if (kind === "policy") {
-          autoSetup.phase = "policy";
-          autoStatus("setting the tenant 2SV policy");
-        } else {
-          autoSetup.phase = "tenant";
-          autoStatus("signed in — reading the tenant");
-        }
-      } else if (kind === "twofa") {
-        autoStatus("enrolling the admin authenticator");
-      } else if (kind === "policy") {
-        autoStatus("setting the tenant 2SV policy");
-      } else if (kind === "console") {
-        autoStatus("building the key");
-      }
-      renderAutoSetup();
     }
 
-    if (!autoSetup.running || autoSetup.stop) break;
+    const signedIn = kind !== "sign-in" && kind !== "other";
+    if (!signedIn) {
+      autoSetup.signedIn = false;
+      autoStatus("sign in as the tenant admin in the worker tab");
+      if (autoSetup.current) {
+        autoSetup.taskAttempted = false;
+        autoSetup.taskStartedAt = Date.now();
+      }
+      await sendAutoHandoff(url);
+      await sleep(1500);
+      continue;
+    }
+
+    if (!autoSetup.signedIn) {
+      autoSetup.signedIn = true;
+      autoStatus("signed in — starting");
+      autoLog("signed in to the Admin console", "ok");
+      renderAutoSetup();
+      await sleep(600);
+    }
 
     await sendAutoHandoff(url);
 
-    if (autoSetup.phase === "tenant") {
-      // A fresh sign-in can land on a terms or welcome interstitial. Give the
-      // content script a few ticks to clear it before changing pages.
-      if (!autoSetup.domainsOpened && Date.now() - autoSetup.adminAt > 3500) {
-        await openAutoDomains();
+    if (!autoSetup.current) {
+      const next = autoSetup.queue.shift();
+      if (!next) {
+        await completeAutoRun();
+        return;
       }
+      await beginAutoTask(next);
+    } else {
+      await autoTaskTick();
     }
 
-    // A soft timeout on the billing catalogue. A tenant created through the
-    // Cloud Identity Free signup already has the product; if Google will not
-    // expose the state, do not strand the run there.
-    if (
-      autoSetup.phase === "billing" &&
-      autoSetup.billingAt &&
-      Date.now() - autoSetup.billingAt > 45_000
-    ) {
-      autoLog(
-        "Cloud Identity state did not become readable; continuing to the admin 2SV step",
-        "warn"
-      );
-      await goAutoAdmin2SV();
-    }
+    await sleep(1000);
+  }
+}
 
-    // The policy page is evidence-only here: the authenticator is already
-    // enrolled, so a missing signal must not block the key.
-    if (
-      autoSetup.phase === "policy" &&
-      autoSetup.policyAt &&
-      Date.now() - autoSetup.policyAt > 60_000
-    ) {
-      autoLog(
-        "2SV policy page did not confirm; continuing to the key — finish the policy manually if needed",
-        "warn"
-      );
-      await setSetup((draft) => {
-        draft.done.twostep = true;
+function pauseAutoContent() {
+  autoSetup.handoffPaused = true;
+  if (!autoSetup.tabId) return;
+  api.tabs
+    .sendMessage(autoSetup.tabId, { type: "setup-stop" })
+    .catch(() => {});
+}
+
+async function finishAutoTask(id, { error = "", key = "" } = {}) {
+  if (autoSetup.current !== id) return;
+  const def = SUBSTEP_BY_ID[id];
+  autoSetup.current = "";
+  autoSetup.taskStartedAt = 0;
+
+  if (error) {
+    await setSubstep(id, { done: false, status: "failed", error: String(error).slice(0, 320) });
+    autoSetup.running = false;
+    autoSetup.stop = true;
+    autoSetup.phase = "failed";
+    autoStatus(`failed · ${def?.label || id}: ${error}`);
+    autoLog(`${def?.label || id}: ${error}`, "error");
+    pauseAutoContent();
+    renderAutoSetup();
+    await focusRunnerTab();
+    return;
+  }
+
+  await markSubstepDone(id);
+  if (id === "twostep.enroll") {
+    await setSubstep("twostep.open", { done: true, status: "done", error: "" });
+    if (autoSetup.policySafe) {
+      autoSetup.blocked = autoSetup.blocked?.id === "twostep.policy" ? null : autoSetup.blocked;
+      await persistAutoState({ policySafe: true }).catch(() => {});
+    }
+    if (!autoSetup.policySafe) {
+      autoSetup.queue = autoSetup.queue.filter((entry) => entry !== "twostep.policy");
+      await setSubstep("twostep.policy", {
+        done: false,
+        status: "failed",
+        error:
+          "admin 2SV is already on without a saved authenticator secret — set the policy manually only if another allowed factor exists",
       });
-      await continueToKey();
+      autoLog(
+        "2SV policy left manual: an existing admin without a saved authenticator secret would be locked out",
+        "warn"
+      );
     }
+  }
+  if (id === "key.authorize") {
+    autoSetup.pendingKeyId = key || autoSetup.pendingKeyId;
+    await markSubstepDone("run.key");
+    autoSetup.endedOnKey = true;
+  }
+  if (id === "run.check") autoSetup.endedOnKey = true;
+  // The consent and client pages are left open for the manual scope work.
+  // Stop the page automation there so it cannot click behind the user.
+  if (id === "key.consent" || id === "key.client") pauseAutoContent();
 
-    if (
-      autoSetup.phase === "twofa" &&
-      autoSetup.twoStepAt &&
-      Date.now() - autoSetup.twoStepAt > 150_000
-    ) {
-      autoStatus("2SV wizard needs one manual step in the worker tab");
+  autoLog(`${def?.label || id} — done`, "ok");
+  if (!autoSetup.queue.length) {
+    await completeAutoRun();
+    return;
+  }
+  autoStatus("starting the next sub-step");
+  renderAutoSetup();
+}
+
+async function failAutoTask(id, error) {
+  await finishAutoTask(id, { error: String(error || "failed") });
+}
+
+async function completeAutoRun() {
+  autoSetup.running = false;
+  autoSetup.stop = true;
+  autoSetup.current = "";
+  autoSetup.queue = [];
+  if (autoSetup.blocked) {
+    const blockedDef = SUBSTEP_BY_ID[autoSetup.blocked.id];
+    const labels = missingSubstepLabels(autoSetup.blocked.missing).join(", ");
+    autoSetup.phase = "paused";
+    autoStatus(
+      labels
+        ? `paused — tick ${labels}, then run again`
+        : `paused — ${blockedDef?.label || autoSetup.blocked.id} needs a manual check`
+    );
+    autoLog(
+      `automatic run paused: ${blockedDef?.label || autoSetup.blocked.id} needs ${
+        labels || "a manual check"
+      }`,
+      "warn"
+    );
+    if (!substepEntry(autoSetup.blocked.id)?.error) {
+      await setSubstep(autoSetup.blocked.id, {
+        status: "auto",
+        error: `needs: ${labels || "a manual check"}`,
+      });
     }
+    pauseAutoContent();
+  } else {
+    const manual = SUBSTEPS.filter(
+      (entry) => substepEntry(entry.id)?.status === "failed"
+    ).map((entry) => entry.label);
+    autoSetup.phase = "done";
+    autoStatus(
+      manual.length
+        ? `done — manual check: ${manual.join(", ")}`
+        : "done — selected sub-steps finished"
+    );
+    autoLog("automatic run finished", "ok");
+    pauseAutoContent();
+  }
+  renderAutoSetup();
+  await focusRunnerTab();
+  if (autoSetup.endedOnKey && !autoSetup.blocked) switchTab("keys");
+}
 
-    await sleep(1500);
+async function runLocalSubstep(def) {
+  autoSetup.running = true;
+  autoSetup.stop = false;
+  autoSetup.current = "";
+  autoSetup.queue = [];
+  autoSetup.blocked = null;
+  autoSetup.endedOnKey = false;
+  autoSetup.phase = "running";
+  autoStatus(`running · ${def.label}`);
+  renderAutoSetup();
+  await setSubstep(def.id, { status: "running", error: "" });
+  try {
+    const key =
+      state.keys.find((entry) => entry.status === "ok") ||
+      state.keys.find((entry) => !entry.needs_consent) ||
+      state.keys[0];
+    if (!key) throw new Error("load a key in Keys first");
+    await withTimeout(checkKey(key.id), def.timeout || 45_000, "key check");
+    const updated = state.keys.find((entry) => entry.id === key.id);
+    if (!updated || updated.status !== "ok") {
+      throw new Error(updated?.message || "the key check did not pass");
+    }
+    await markSubstepDone(def.id);
+    await markSubstepDone("run.key");
+    autoSetup.endedOnKey = true;
+    autoSetup.phase = "done";
+    autoStatus("key check passed");
+    autoLog("key check passed", "ok");
+  } catch (error) {
+    await setSubstep(def.id, {
+      done: false,
+      status: "failed",
+      error: String(error.message || error).slice(0, 320),
+    });
+    autoSetup.phase = "failed";
+    autoStatus(`failed · ${def.label}: ${error.message || error}`);
+    autoLog(`key check failed: ${error.message || error}`, "error");
+  } finally {
+    autoSetup.running = false;
+    autoSetup.stop = true;
+    renderAutoSetup();
+    await focusRunnerTab();
   }
 }
 
@@ -3179,12 +3897,12 @@ async function handleAutoAdmin(message) {
   const profile = autoProfile();
   const domain = String(profile.domain || "").toLowerCase();
   if (domain && !email.endsWith(`@${domain}`)) {
-    autoLog(
-      `the worker tab is signed in as ${email}, not @${domain} — stopping`,
-      "error"
-    );
-    autoStatus("wrong admin account — sign in as the tenant admin");
-    stopAutoSetup("wrong admin account");
+    const reason = `the worker tab is signed in as ${email}, not @${domain}`;
+    if (autoSetup.current) await failAutoTask(autoSetup.current, reason);
+    else {
+      stopAutoSetup("wrong admin account — sign in as the tenant admin");
+      autoLog(reason, "error");
+    }
     return;
   }
   if (autoSetup.adminEmail === email) return;
@@ -3197,9 +3915,13 @@ async function handleAutoAdmin(message) {
 }
 
 async function handleAutoDomain(message) {
+  if (autoSetup.current !== "tenant.verify") return;
   const token = String(message.token || "");
   const profile = autoProfile();
-  if (!token || !profile.subdomain) return;
+  if (!token || !profile.subdomain) {
+    await failAutoTask("tenant.verify", "DuckDNS token/subdomain missing from step 1");
+    return;
+  }
   autoStatus("writing the DuckDNS TXT record");
   autoLog(`writing the domain TXT record to ${profile.subdomain}.duckdns.org`);
   try {
@@ -3209,146 +3931,65 @@ async function handleAutoDomain(message) {
       if (rounds % 4 === 0) autoLog(`waiting for DNS propagation (${rounds})`);
     });
     if (!found.found) {
-      autoStatus("DNS record not visible yet");
-      autoLog(
-        "the TXT record did not appear in 90s — check DuckDNS, then press Scan tab again",
-        "error"
+      await failAutoTask(
+        "tenant.verify",
+        "the TXT record did not resolve in 90s — check DuckDNS and press Auto again"
       );
       return;
     }
     await signalAutoDomainReady();
   } catch (error) {
-    autoStatus("domain verification failed");
-    autoLog(`domain verification failed: ${error.message || error}`, "error");
+    await failAutoTask("tenant.verify", error.message || error);
   }
 }
 
 async function handleAutoDomainStatus(message) {
-  if (!autoSetup.running) return;
+  if (autoSetup.current !== "tenant.verify") return;
   if (message.found === false) {
-    if (Date.now() - autoSetup.domainAt < 15_000) {
-      return;
-    }
-    autoLog(
-      `the tenant does not list ${autoProfile().domain} — the worker tab is signed in to a different tenant`,
-      "error"
+    if (Date.now() - autoSetup.taskStartedAt < 25_000) return;
+    await failAutoTask(
+      "tenant.verify",
+      `the tenant does not list ${autoProfile().domain} — sign in as the tenant admin`
     );
-    autoStatus("wrong tenant — sign in as the tenant admin");
-    stopAutoSetup("wrong tenant");
     return;
   }
   if (message.verified) {
-    await handleAutoDomainVerified();
+    await finishAutoTask("tenant.verify");
     return;
   }
   if (!autoSetup.domainWarnAt || Date.now() - autoSetup.domainWarnAt > 15_000) {
     autoSetup.domainWarnAt = Date.now();
-    autoLog(
-      "the domain is listed but not verified yet — waiting for the TXT record",
-      "warn"
-    );
+    autoLog("the domain is listed but not verified yet — waiting for the TXT record", "warn");
   }
 }
 
 async function handleAutoDomainVerified() {
-  if (!autoSetup.running) return;
-  if (["billing", "twofa", "policy", "key", "done"].includes(autoSetup.phase)) return;
-  ensureAutoAdminLabel();
-  autoSetup.phase = "billing";
-  autoLog("domain verified", "ok");
-  await setSetup((draft) => {
-    draft.done.tenant = true;
-  });
-  autoSetup.billingAt = Date.now();
-  autoStatus("checking Cloud Identity Free");
-  renderAutoSetup();
-  await api.tabs.update(autoSetup.tabId, { url: AUTO_BILLING }).catch(() => {});
+  if (autoSetup.current !== "tenant.verify") return;
+  await finishAutoTask("tenant.verify");
 }
 
 async function handleAutoBillingDone() {
-  if (!autoSetup.running) return;
-  if (["twofa", "policy", "key", "done"].includes(autoSetup.phase)) return;
-  autoLog("Cloud Identity Free is active", "ok");
-  await setSetup((draft) => {
-    draft.done.tenant = true;
-  });
-  await goAutoAdmin2SV();
-}
-
-async function goAutoAdmin2SV() {
-  if (!autoSetup.tabId) return;
-  ensureAutoAdminLabel();
-  autoSetup.phase = "twofa";
-  autoSetup.twoStepAt = Date.now();
-  autoStatus("enrolling the admin authenticator");
-  renderAutoSetup();
-  await api.tabs.update(autoSetup.tabId, { url: AUTO_ADMIN_2SV }).catch(() => {});
-  autoLog(
-    "the admin's 2SV wizard is open; if it needs a password or a code, finish it in the worker tab",
-    "warn"
-  );
-}
-
-async function onAdminTwoStepDone() {
-  await setSetup((draft) => {
-    draft.done.twostep = true;
-  });
-  if (["policy", "key", "done", "stopped"].includes(autoSetup.phase)) return;
-  if (!autoSetup.running) return;
-  autoLog("admin authenticator enrolled; opening the tenant 2SV policy", "ok");
-  await goAutoPolicy();
-}
-
-async function goAutoPolicy() {
-  if (!autoSetup.tabId) return;
-  if (["policy", "key", "done", "stopped"].includes(autoSetup.phase)) return;
-  ensureAutoAdminLabel();
-  autoSetup.phase = "policy";
-  autoSetup.policyAt = Date.now();
-  autoStatus("setting the tenant 2SV policy");
-  renderAutoSetup();
-  await api.tabs.update(autoSetup.tabId, { url: AUTO_2SV }).catch(() => {});
-}
-
-async function handleAutoTwoStepExisting(message = {}) {
-  await setSetup((draft) => {
-    draft.done.twostep = true;
-  });
-  if (message.secret) {
-    autoLog(
-      "admin 2SV is already on and the saved authenticator secret matches; setting the tenant policy",
-      "ok"
-    );
-    await goAutoPolicy();
-    return;
-  }
-  autoLog(
-    "admin 2SV is already on, but no authenticator secret was captured — leaving the policy untouched so a phone-only admin is not locked out",
-    "warn"
-  );
-  autoLog("continuing to the key; set the 2SV policy manually if the tenant needs it", "warn");
-  await continueToKey();
+  if (autoSetup.current !== "tenant.cloud-identity") return;
+  await finishAutoTask("tenant.cloud-identity");
 }
 
 async function handleAutoPolicyDone() {
-  if (!autoSetup.running) return;
-  if (!["policy", "twofa"].includes(autoSetup.phase)) return;
-  autoLog("2SV policy looks set", "ok");
-  await setSetup((draft) => {
-    draft.done.twostep = true;
-  });
-  await continueToKey();
+  if (autoSetup.current !== "twostep.policy") return;
+  await finishAutoTask("twostep.policy");
 }
 
-async function continueToKey() {
-  if (!autoSetup.tabId) return;
-  ensureAutoAdminLabel();
-  autoSetup.phase = "key";
-  autoSetup.keyAt = Date.now();
-  autoStatus("creating the Cloud project");
-  autoLog("opening Google Cloud project creation");
-  renderAutoSetup();
-  await api.tabs.update(autoSetup.tabId, { url: AUTO_PROJECT }).catch(() => {});
+async function handleAdminEnrolled() {
+  if (autoSetup.current !== "twostep.enroll") return;
+  autoSetup.policySafe = true;
+  await persistAutoState({ policySafe: true }).catch(() => {});
+  await finishAutoTask("twostep.enroll");
+}
+
+async function handleAutoTwoStepExisting(message = {}) {
+  if (autoSetup.current !== "twostep.enroll") return;
+  autoSetup.policySafe = Boolean(message.secret);
+  await persistAutoState({ policySafe: autoSetup.policySafe }).catch(() => {});
+  await finishAutoTask("twostep.enroll");
 }
 
 async function addAutoKey(clientId, clientSecret) {
@@ -3382,22 +4023,48 @@ async function addAutoKey(clientId, clientSecret) {
 }
 
 async function handleAutoClient(message) {
-  ensureAutoAdminLabel();
+  if (autoSetup.current !== "key.client") return;
   const clientId = String(message.client_id || "").trim();
   const clientSecret = String(message.client_secret || "").trim();
-  if (!clientId || !clientSecret) return;
-
-  const profile = autoProfile();
-  if (!autoSetup.storeId) autoSetup.storeId = await ensureSetupContainer();
-  autoStatus("authorizing the OAuth client");
-  autoLog(`OAuth client ${clientId} found; adding it to Keys`);
-  const key = await addAutoKey(clientId, clientSecret);
-  if (!key) {
-    autoLog("the OAuth client was already in Keys", "warn");
-    autoStatus("key already loaded");
+  if (!clientId || !clientSecret) {
+    await failAutoTask("key.client", "the OAuth client dialog did not expose an id and secret");
     return;
   }
+  const key = await addAutoKey(clientId, clientSecret);
+  if (!key) {
+    await failAutoTask("key.client", "could not add the OAuth client to Keys");
+    return;
+  }
+  autoSetup.pendingKeyId = key.id;
+  autoLog(`OAuth client ${clientId} added to Keys`);
+  await finishAutoTask("key.client", { key: key.id });
+}
 
+function resolvePendingKey() {
+  if (autoSetup.pendingKeyId) {
+    const pending = state.keys.find((entry) => entry.id === autoSetup.pendingKeyId);
+    if (pending) return pending;
+  }
+  const domain = autoProfile().domain;
+  const matching = state.keys.find(
+    (entry) =>
+      entry.needs_consent &&
+      (!domain || String(entry.domain || "").toLowerCase() === domain.toLowerCase())
+  );
+  return matching || state.keys.find((entry) => entry.needs_consent) || null;
+}
+
+async function runAuthorizeTask(id) {
+  const key = resolvePendingKey();
+  if (!key) {
+    await failAutoTask(
+      id,
+      "no OAuth client to authorize — run Create the desktop OAuth client first"
+    );
+    return;
+  }
+  if (!autoSetup.storeId) autoSetup.storeId = await ensureSetupContainer();
+  autoStatus(`authorizing ${key.label}`);
   const authorized = await authorizeKey(key.id, {
     storeId: autoSetup.storeId,
     autoConsent: true,
@@ -3406,31 +4073,11 @@ async function handleAutoClient(message) {
     otp: autoAdminOtp(),
     timeout: 180_000,
   });
-
   if (!authorized) {
-    autoStatus("consent was not completed — finish it in the consent tab");
-    autoLog(
-      "the key is in Keys but has no refresh token yet; press Authorize on its row when ready",
-      "warn"
-    );
+    await failAutoTask(id, "consent was not completed — finish it in the consent tab and retry");
     return;
   }
-
-  await setSetup((draft) => {
-    draft.done.key = true;
-  });
-  autoLog("key authorized — automatic finish is done", "ok");
-  autoStatus("done — key ready");
-  autoSetup.phase = "done";
-  autoSetup.running = false;
-  if (autoSetup.tabId) {
-    api.tabs
-      .sendMessage(autoSetup.tabId, { type: "setup-stop" })
-      .catch(() => {});
-  }
-  renderAutoSetup();
-  await focusRunnerTab();
-  switchTab("keys");
+  await finishAutoTask(id, { key: key.id });
 }
 
 async function handleAutoCaptcha() {
@@ -3440,11 +4087,13 @@ async function handleAutoCaptcha() {
 }
 
 function wireAutoSetup() {
-  $("auto-start")?.addEventListener("click", () => {
-    startAutoSetup().catch((error) =>
-      remember(`automatic finish: ${error.message || error}`, "error")
-    );
-  });
+  for (const id of ["auto-start", "auto-start-top"]) {
+    $(id)?.addEventListener("click", () => {
+      startAutoSetup().catch((error) =>
+        remember(`automatic finish: ${error.message || error}`, "error")
+      );
+    });
+  }
   $("auto-stop")?.addEventListener("click", () => stopAutoSetup("stopped by you"));
   $("auto-keys")?.addEventListener("click", () => switchTab("keys"));
   $("auto-manual")?.addEventListener("click", () => {
@@ -3455,32 +4104,25 @@ function wireAutoSetup() {
       .then(() => openStep("twostep", true))
       .catch(() => {});
   });
-  $("auto-continue")?.addEventListener("click", () => {
-    continueToKey().catch((error) =>
-      remember(`automatic finish: ${error.message || error}`, "error")
-    );
-  });
-  $("auto-credentials")?.addEventListener("click", () => {
-    if (!autoSetup.tabId || !autoSetup.projectId) {
-      autoLog("no Cloud project id yet — create the project first", "warn");
-      return;
-    }
-    autoLog(`opening the credentials page for ${autoSetup.projectId}`);
-    api.tabs
-      .update(autoSetup.tabId, {
-        url: `https://console.cloud.google.com/apis/credentials?project=${autoSetup.projectId}`,
-      })
-      .catch(() => {});
-  });
 }
 
 function wireSetup() {
   const panel = $("panel-setup");
   if (!panel) return;
 
+  decorateSubsteps();
+
   panel.addEventListener("click", (event) => {
+    const auto = event.target.closest("[data-automate-substep]");
+    if (auto) {
+      runSubstep(auto.dataset.automateSubstep).catch((error) =>
+        remember(`automatic sub-step: ${error.message || error}`, "error")
+      );
+      return;
+    }
     // The tick is a real checkbox; let its change event do the work.
     if (event.target.closest("[data-step-done]")) return;
+    if (event.target.closest("[data-substep-done]")) return;
     const head = event.target.closest(".step-head");
     if (!head) return;
     const step = head.closest(".step");
@@ -3504,9 +4146,30 @@ function wireSetup() {
   });
 
   panel.addEventListener("change", (event) => {
+    const sub = event.target.closest("[data-substep-done]");
+    if (sub) {
+      const id = sub.dataset.substepDone;
+      const def = SUBSTEP_BY_ID[id];
+      if (sub.checked) {
+        // Ticking a queued task is how the user skips it without stopping the
+        // rest of the run.
+        autoSetup.queue = autoSetup.queue.filter((entry) => entry !== id);
+      }
+      setSubstep(id, {
+        done: sub.checked,
+        status: sub.checked ? "done" : def?.auto ? "auto" : "manual",
+        error: "",
+      }).catch(() => {});
+      return;
+    }
+
     const box = event.target.closest("[data-step-done]");
     if (!box) return;
     const id = box.dataset.stepDone;
+    if (STEP_SUBSTEPS[id]) {
+      setAllSubsteps(id, box.checked).catch(() => {});
+      return;
+    }
     setSetup((draft) => {
       draft.done[id] = box.checked;
     }).catch(() => {});
@@ -4060,7 +4723,7 @@ function wire() {
       const email = String(message.email || "").toLowerCase();
       liveOtp.set(email, message.secret);
       if (message.enrolled && email) liveEnrolled.add(email);
-      mutate((draft) => {
+      const saved = mutate((draft) => {
         let matched = false;
         const row = draft.identities.find(
           (entry) => String(entry.email || "").toLowerCase() === email
@@ -4104,9 +4767,11 @@ function wire() {
       const sameAdmin = admin
         ? email === admin
         : Boolean(domain && email.endsWith(`@${domain}`));
-      if (message.enrolled && autoSetup.running && autoSetup.tabId && sameAdmin) {
-        onAdminTwoStepDone().catch((error) =>
-          autoLog(`admin 2SV: ${error.message || error}`, "error")
+      if (message.enrolled && autoSetup.current === "twostep.enroll" && sameAdmin) {
+        saved.finally(() =>
+          handleAdminEnrolled().catch((error) =>
+            autoLog(`admin 2SV: ${error.message || error}`, "error")
+          )
         );
       }
     }
@@ -4117,7 +4782,7 @@ function wire() {
       const sameAdmin = admin
         ? email === admin
         : Boolean(domain && email.endsWith(`@${domain}`));
-      if (autoSetup.running && autoSetup.tabId && sameAdmin) {
+      if (autoSetup.current === "twostep.enroll" && sameAdmin) {
         handleAutoTwoStepExisting(message).catch((error) =>
           autoLog(`admin 2SV: ${error.message || error}`, "error")
         );
@@ -4169,9 +4834,35 @@ function wire() {
       return false;
     }
     if (message?.type === "setup-project" && message.project) {
-      autoSetup.projectId = String(message.project);
-      autoLog(`Cloud project id: ${autoSetup.projectId}`);
-      renderAutoSetup();
+      const project = String(message.project);
+      const changed = project !== autoSetup.projectId;
+      autoSetup.projectId = project;
+      if (changed) {
+        autoLog(`Cloud project id: ${autoSetup.projectId}`);
+        persistAutoState({ projectId: autoSetup.projectId }).catch(() => {});
+        renderAutoSetup();
+      }
+      if (autoSetup.current === "key.project") {
+        finishAutoTask("key.project").catch((error) =>
+          autoLog(`project: ${error.message || error}`, "error")
+        );
+      }
+      return false;
+    }
+    if (message?.type === "setup-api-enabled") {
+      if (autoSetup.current === "key.admin-sdk") {
+        finishAutoTask("key.admin-sdk").catch((error) =>
+          autoLog(`Admin SDK: ${error.message || error}`, "error")
+        );
+      }
+      return false;
+    }
+    if (message?.type === "setup-consent-ready") {
+      if (autoSetup.current === "key.consent") {
+        finishAutoTask("key.consent").catch((error) =>
+          autoLog(`consent: ${error.message || error}`, "error")
+        );
+      }
       return false;
     }
     if (message?.type === "log-line" && message.line) {
@@ -4237,6 +4928,7 @@ async function boot() {
   // immediately and the build pill never sits on "v---".
   checkBuild();
   state = await load();
+  await migrateSubsteps();
   wire();
   renderConsoleLog();
   render();

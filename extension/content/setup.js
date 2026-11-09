@@ -31,6 +31,9 @@
     clientSent: false,
     projectId: "",
     projectSent: false,
+    apiSent: false,
+    consentSent: false,
+    consentStarted: false,
     paused: false,
     lastHandoff: 0,
     adminSent: "",
@@ -374,13 +377,6 @@
     return "";
   }
 
-  function setLocation(url) {
-    if (!url || url === location.href) return false;
-    note(`navigating to ${url.slice(0, 110)}`);
-    location.href = url;
-    return true;
-  }
-
   function consoleTick(body) {
     detectAdmin();
     const project = extractProjectId();
@@ -394,6 +390,7 @@
     }
 
     if (/\/projectcreate/i.test(location.pathname)) {
+      if (state.projectId) return;
       const input =
         document.querySelector('input[aria-label*="Project name" i]') ||
         document.querySelector('input#project-name') ||
@@ -402,20 +399,15 @@
       if (input?.value) {
         act("project-create", () => clickExact(["create", "create project"], CONTROLS));
       }
-      if (state.projectId) {
-        setLocation(
-          `https://console.cloud.google.com/apis/library/admin.googleapis.com?project=${state.projectId}`
-        );
-      }
       return;
     }
 
     if (/\/apis\/library\/admin\.googleapis\.com/i.test(location.pathname)) {
       if (/api enabled|disable/i.test(body)) {
-        if (state.projectId) {
-          setLocation(
-            `https://console.cloud.google.com/apis/credentials/consent?project=${state.projectId}`
-          );
+        if (!state.apiSent) {
+          state.apiSent = true;
+          note("Admin SDK enabled", "ok");
+          send({ type: "setup-api-enabled" });
         }
         return;
       }
@@ -424,32 +416,38 @@
     }
 
     if (/\/apis\/credentials\/consent/i.test(location.pathname)) {
-      if (/data access|scopes/i.test(body) && !/get started/i.test(body)) {
-        act("consent-scopes", () =>
-          clickByText(["add or remove scopes", "data access", "edit"], CONTROLS)
-        );
-        act("consent-update", () => clickByText(["update", "save", "confirm"], CONTROLS));
-        once(
-          "consent-manual",
-          "consent screen reached — if it stops here, add the five scopes and create the OAuth client, then paste the JSON below",
-          "warn"
-        );
+      const appNameInput =
+        document.querySelector('input[aria-label*="App name" i]') ||
+        document.querySelector('input[aria-label*="Application name" i]');
+      const scopesPage =
+        /add or remove scopes/i.test(body) && !/get started/i.test(body);
+      if (scopesPage && (!appNameInput || state.consentStarted)) {
+        if (!state.consentSent) {
+          state.consentSent = true;
+          note("consent screen ready — add the five scopes on this page", "ok");
+          send({ type: "setup-consent-ready" });
+        }
         return;
       }
       if (/get started/i.test(body)) {
-        act("consent-start", () => clickExact(["get started"], CONTROLS));
+        act("consent-start", () => {
+          state.consentStarted = true;
+          return clickExact(["get started"], CONTROLS);
+        });
         return;
       }
-      const nameInput =
-        document.querySelector('input[aria-label*="App name" i]') ||
-        document.querySelector('input[aria-label*="Application name" i]');
-      fillIfEmpty(nameInput, state.profile.businessName);
+      fillIfEmpty(appNameInput, state.profile.businessName);
       const emailInput =
         document.querySelector('input[type="email"]') || textInputs().find((i) => i.type === "email");
       fillIfEmpty(emailInput, state.profile.recoveryEmail);
-      act("consent-next", () =>
-        clickExact(["next", "save and continue", "create", "save"], CONTROLS)
-      );
+      act("consent-next", () => {
+        const hit = clickExact(
+          ["next", "save and continue", "create", "save"],
+          CONTROLS
+        );
+        if (hit) state.consentStarted = true;
+        return hit;
+      });
       act("consent-internal", () => clickExact(["internal"], CONTROLS));
       return;
     }
@@ -490,8 +488,6 @@
       }
       return;
     }
-
-    act("console-idle", () => clickByText(["next", "continue", "create", "enable"], CONTROLS));
   }
 
   // --------------------------------------------------------------------- tick
@@ -545,7 +541,28 @@
 
     if (message.type === "setup-fill") {
       state.profile = message.profile || state.profile;
-      state.phase = message.phase || "";
+      const phase = message.phase || "";
+      if (phase !== state.phase) {
+        // A redo of one sub-step must see its one-shot signals again even when
+        // the worker tab stayed on the same document.
+        if (phase === "tenant.verify") {
+          state.domainToken = "";
+          state.domainStatusAt = 0;
+        }
+        if (phase === "tenant.cloud-identity") state.billingSent = false;
+        if (phase === "twostep.policy") state.policySent = false;
+        if (phase === "key.project") {
+          state.projectSent = false;
+          state.projectId = "";
+        }
+        if (phase === "key.admin-sdk") state.apiSent = false;
+        if (phase === "key.consent") {
+          state.consentSent = false;
+          state.consentStarted = false;
+        }
+        if (phase === "key.client") state.clientSent = false;
+      }
+      state.phase = phase;
       state.paused = false;
       state.lastHandoff = Date.now();
       if (message.profile?.adminEmail) state.profile.adminEmail = message.profile.adminEmail;

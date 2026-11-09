@@ -1700,6 +1700,73 @@ details.card[open] summary {
   margin-top: 8px;
 }
 
+/* A sub-step is a real checkbox: tick what is already done, then let Auto run
+   the rest. The status chip is the evidence, separate from the tick. */
+.substep-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  padding: 0 0 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.045);
+}
+
+.substep-tick {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  cursor: pointer;
+}
+
+.substep-tick input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.substep-state {
+  color: var(--muted-2);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.substep-state[data-state="auto"],
+.substep-state[data-state="queued"] {
+  color: var(--amber);
+}
+
+.substep-state[data-state="running"] {
+  color: var(--accent-hi);
+}
+
+.substep-state[data-state="done"] {
+  color: var(--mint);
+}
+
+.substep-state[data-state="failed"] {
+  color: var(--danger);
+}
+
+.auto-substep {
+  margin-left: auto;
+  flex: none;
+}
+
+.substep-error {
+  color: var(--danger) !important;
+}
+
+.step-actions > li[data-done="true"] {
+  opacity: 0.68;
+}
+
+.step-actions > li[data-done="true"] .substep-head {
+  border-bottom-color: transparent;
+}
+
 /* A helper inside a cave drops its own frame: it is already in one. A thin
    orange rule keeps it legible as a nested thing rather than more prose. */
 .step-actions .helper {

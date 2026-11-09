@@ -67,22 +67,30 @@ The runner opens on install. If it does not, click the toolbar icon and choose
    - **Step 2 — Cloud Identity tenant.** Create the tenant, verify the domain and
      create the admin account manually. The Phone gate card can decode the admin
      signup QR and read the SMS number/message.
-   - **After step 2, choose a branch.** **Continue manually** opens steps 3–5.
-     **Automate from here** opens one new tab at `admin.google.com` in the
+   - **Sub-step checklist.** Every sub-step has a checkbox. Tick the ones you
+     have already done. Automatable sub-steps also have an **Auto** button that
+     runs only that one task; **Automate remaining** runs every unchecked
+     automatable sub-step in order.
+   - **Automate remaining** opens one new tab at `admin.google.com` in the
      `RAC setup` container (Chrome: the current profile). Sign in there as the
      tenant admin; the extension takes over when it lands in the Admin console.
      It never asks for, stores or types the admin password.
-   - The automatic branch checks the domain (and writes the DuckDNS TXT record
-     if Google shows one), activates Cloud Identity Free if it is missing,
-     enrols the admin authenticator, sets the tenant 2SV policy and builds the
-     key. Each finished task ticks its manual step: tenant, 2SV and key. If a
-     page or a login challenge needs a human, it waits in the worker tab; the
-     run resumes when the page moves on. Use **Skip to key** if a console page
-     stalls, or **Stop** to go back to manual.
+   - The automatic tasks check the domain (and write the DuckDNS TXT record if
+     Google shows one), activate Cloud Identity Free if it is missing, enrol the
+     admin authenticator, set the tenant 2SV policy and build/authorize the key.
+     Each finished task ticks its own checkbox. If a page or a login challenge
+     needs a human, it waits in the worker tab; the run resumes when the page
+     moves on. Use **Stop** to go back to manual.
+   - Tasks with prerequisites have their Auto button disabled until the earlier
+     sub-step is ticked. The five OAuth scopes are deliberately manual: the
+     consent task stops at the scope picker, you add the scopes, tick that
+     sub-step, then run the remaining tasks. This avoids producing a key that
+     authenticates but answers 403 for the audit and policy reads.
    - **Already-enrolled admin safety.** If the admin already has 2SV but the
      extension has no authenticator secret for it, it does not change the tenant
-     policy. A phone-only admin would be locked out. It marks the 2SV step done
-     and continues to the key; set the policy manually if the tenant needs it.
+     policy. A phone-only admin would be locked out. It marks the authenticator
+     sub-step done, leaves the policy sub-step manual and continues to the key;
+     set the policy manually only if another allowed factor exists.
    - The key row has **Admin** / **Recover admin** (show or reset the tenant admin
      password and mint fresh backup codes using the key) and **JSON** (download the
      key so it is backed up outside extension storage).
@@ -139,9 +147,10 @@ remains in the Git history. The extension is self-contained.
 ## Testing
 
 Load the unpacked extension in Firefox (or the Chrome build) and add a key. From
-Setup, save a DuckDNS token/subdomain and press **Automate from here** to check
-the worker-tab handoff; sign-in stops at `accounts.google.com` until a human signs
-in, which is the expected boundary.
+Setup, save a DuckDNS token/subdomain, tick the step-1 sub-steps and press an
+**Auto** button or **Automate remaining** to check the worker-tab handoff;
+sign-in stops at `accounts.google.com` until a human signs in, which is the
+expected boundary.
 
 `tools/e2e.py` is the older Firefox harness; it is legacy but still useful for the
 lane run, identity creation and code minting.

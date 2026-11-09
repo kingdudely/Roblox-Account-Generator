@@ -229,13 +229,11 @@
               </ol>
               <div class="buttons">
                 <button id="auto-stop" class="btn danger" disabled>Stop</button>
-                <button id="auto-continue" class="btn tiny ghost" disabled>Skip to key</button>
-                <button id="auto-credentials" class="btn tiny ghost" disabled>Open credentials</button>
                 <button id="auto-keys" class="btn tiny ghost" disabled>Go to Keys</button>
               </div>
               <p class="note">
-                If one page stalls, finish that page in the worker tab; the run picks the
-                next signal back up automatically.
+                Each task has a timeout and leaves the worker tab open. If a page stalls,
+                finish it there and press that sub-step's <b>Auto</b> button again.
               </p>
             </div>
             <div class="card setup-progress">
@@ -243,6 +241,7 @@
                 <h2>Setup</h2>
                 <span class="hint" id="setup-count">0 of 5 done</span>
                 <div class="buttons">
+                  <button id="auto-start-top" class="btn tiny primary">Automate remaining</button>
                   <button id="setup-jump" class="btn tiny">Next step</button>
                   <button id="recheck" class="btn tiny ghost">Re-check</button>
                   <button id="setup-hide" class="btn tiny ghost" aria-pressed="false">Hide done</button>
@@ -276,16 +275,16 @@
               </header>
               <div class="step-body">
                 <ol class="step-actions">
-                  <li>
+                  <li data-substep="dns.account">
                     <p>Sign in at DuckDNS (the first sign-in creates the account) and add a subdomain.</p>
                     <div class="substep-actions">
                       <button class="btn tiny link-out" data-href="https://www.duckdns.org">Go to DuckDNS</button>
                     </div>
                   </li>
-                  <li>
+                  <li data-substep="dns.token">
                     <p>Copy the account token &mdash; one token covers every subdomain.</p>
                   </li>
-                  <li>
+                  <li data-substep="dns.credentials">
                     <p>Save them here. Step 2 uses them to write the verification record.</p>
                     <details class="why"><summary>There is no DNS editor</summary>
                       TXT records exist only behind DuckDNS's API. The fields below are that API, so
@@ -333,25 +332,25 @@
               </header>
               <div class="step-body">
                 <ol class="step-actions">
-                  <li>
+                  <li data-substep="tenant.signup">
                     <p>Open the Cloud Identity Free signup and fill it in.</p>
                     <div class="substep-actions">
                       <button class="btn tiny link-out" data-href="https://workspace.google.com/gcpidentity/signup?sku=identitybasic">Go to the signup</button>
                     </div>
                   </li>
-                  <li>
+                  <li data-substep="tenant.about">
                     <p><b>About you</b> &mdash; your name and a mailbox you still read.</p>
                     <details class="why"><summary>Why not the tenant domain</summary>
                       This is the recovery address, so it must exist outside the tenant. A personal
                       Gmail is what the form expects.
                     </details>
                   </li>
-                  <li><p><b>About your business</b> &mdash; any company name, and your country.</p></li>
-                  <li>
+                  <li data-substep="tenant.business"><p><b>About your business</b> &mdash; any company name, and your country.</p></li>
+                  <li data-substep="tenant.domain-name">
                     <p><b>Domain</b> &mdash; <span class="mono">&lt;sub&gt;.duckdns.org</span>, using the
                     subdomain from step 1.</p>
                   </li>
-                  <li>
+                  <li data-substep="tenant.admin">
                     <p><b>Create the admin account</b> &mdash; username and password. This is
                     <span class="mono">admin@&lt;sub&gt;.duckdns.org</span>, the tenant's first user.</p>
                     <details class="why"><summary>If the form stops at a QR</summary>
@@ -390,10 +389,11 @@
                       </div>
                     </div>
                   </li>
-                  <li>
+                  <li data-substep="tenant.verify">
                     <p><b>Verify the domain</b> &mdash; Google shows a
-                    <span class="mono">google-site-verification=&hellip;</span> value. Paste it below,
-                    press <b>Write record</b>, then <b>Verify</b> in the signup tab.</p>
+                    <span class="mono">google-site-verification=&hellip;</span> value. Press
+                    <b>Auto</b> to write the record, wait for DNS and press <b>Verify</b>, or paste
+                    the value below and use <b>Write record</b> / <b>Verify</b> manually.</p>
                     <div class="helper">
                       <div class="helper-head">
                         <h3>DNS TXT record</h3>
@@ -415,9 +415,16 @@
                       </p>
                     </div>
                   </li>
-                  <li>
+                  <li data-substep="tenant.agreement">
                     <p>Accept the Cloud Identity Agreement. You land in the Google Cloud console with the
                     tenant live.</p>
+                  </li>
+                  <li data-substep="tenant.cloud-identity">
+                    <p><b>Activate Cloud Identity Free</b> if the tenant does not have it yet. The
+                    automatic branch can check the billing catalogue and start the free subscription.</p>
+                    <div class="substep-actions">
+                      <button class="btn tiny link-out" data-href="https://admin.google.com/ac/billing/catalog">Open Billing</button>
+                    </div>
                   </li>
                 </ol>
                 <p class="note">
@@ -435,13 +442,14 @@
                     <span class="hint">optional shortcut</span>
                   </div>
                   <p class="note">
-                    Finish steps 3 and 4 from one new tab. You sign in once as the tenant admin;
-                    the extension checks the domain, activates Cloud Identity Free, enrols the
-                    admin authenticator, sets the 2SV policy and builds the key. Each finished
-                    task ticks its step here.
+                    Every sub-step has a checkbox; automatable ones also have an <b>Auto</b>
+                    button. Tick what you have already done, then press <b>Automate remaining</b>
+                    to run the unchecked automatable sub-steps in order — or use a single
+                    <b>Auto</b> button to run just that one. You sign in once as the tenant admin
+                    in the new tab.
                   </p>
                   <div class="buttons">
-                    <button id="auto-start" class="btn primary">Automate from here</button>
+                    <button id="auto-start" class="btn primary">Automate remaining</button>
                     <button id="auto-manual" class="btn ghost">Continue manually</button>
                   </div>
                   <p class="note">
@@ -469,13 +477,13 @@
               </header>
               <div class="step-body">
                 <ol class="step-actions">
-                  <li>
+                  <li data-substep="twostep.open">
                     <p>Sign in as the admin and open Google's 2-Step Verification settings.</p>
                     <div class="substep-actions">
                       <button class="btn tiny link-out" data-href="https://myaccount.google.com/signinoptions/two-step-verification">Open Google Security</button>
                     </div>
                   </li>
-                  <li>
+                  <li data-substep="twostep.enroll">
                     <p>Choose <b>Authenticator app</b>, click <b>Can't scan it?</b>, and paste the
                     secret below. The live code finishes Google's setup.</p>
                     <div class="helper">
@@ -541,7 +549,7 @@
                       </p>
                     </div>
                   </li>
-                  <li>
+                  <li data-substep="twostep.policy">
                     <p>In the Admin console, set <b>Enforcement On</b> and <b>Methods</b> to
                     <i>Any except verification codes via text, phone call</i>.</p>
                     <details class="why"><summary>Why exactly this combination</summary>
@@ -575,44 +583,60 @@
               </header>
               <div class="step-body">
                 <ol class="step-actions">
-                  <li>
+                  <li data-substep="key.project">
                     <p>Create a project inside the organization.</p>
                     <div class="substep-actions">
                       <button class="btn tiny link-out" data-href="https://console.cloud.google.com/projectcreate">Open project create</button>
                     </div>
                   </li>
-                  <li>
+                  <li data-substep="key.admin-sdk">
                     <p>Enable the Admin SDK on that project.</p>
                     <div class="substep-actions">
                       <button class="btn tiny link-out" data-href="https://console.cloud.google.com/apis/library/admin.googleapis.com">Enable Admin SDK</button>
                     </div>
                   </li>
-                  <li>
-                    <p>OAuth consent screen &rarr; <b>Internal</b>, with scopes
-                    <span class="mono">admin.directory.user</span>,
-                    <span class="mono">admin.directory.user.security</span>,
-                    <span class="mono">admin.directory.domain.readonly</span>,
-                    <span class="mono">admin.reports.audit.readonly</span> and
-                    <span class="mono">cloud-identity.policies.readonly</span>.</p>
+                  <li data-substep="key.consent">
+                    <p>OAuth consent screen &rarr; app name, support email, <b>Internal</b> audience.</p>
                     <p class="note">
-                      A key authorized before these were added still works, but the login audit and
-                      policy reads answer 403. Press <b>Re-consent</b> on its Tenants row after adding
-                      the two scopes to the consent screen.
+                      The automatic branch fills the app information and picks <b>Internal</b>. It
+                      stops before the scope picker so you can confirm the five scopes yourself.
                     </p>
                     <div class="substep-actions">
                       <button class="btn tiny link-out" data-href="https://console.cloud.google.com/apis/credentials/consent">Open consent screen</button>
                     </div>
                   </li>
-                  <li>
+                  <li data-substep="key.scopes">
+                    <p>Add these scopes on the consent screen:</p>
+                    <p class="note mono">
+                      admin.directory.user<br />
+                      admin.directory.user.security<br />
+                      admin.directory.domain.readonly<br />
+                      admin.reports.audit.readonly<br />
+                      cloud-identity.policies.readonly
+                    </p>
+                    <p class="note">
+                      A key authorized before these were added still works, but the login audit and
+                      policy reads answer 403. Press <b>Re-consent</b> on its Tenants row after adding
+                      the two scopes to the consent screen. Tick this sub-step when the scopes are on
+                      the consent screen.
+                    </p>
+                    <div class="substep-actions">
+                      <button class="btn tiny link-out" data-href="https://console.cloud.google.com/apis/credentials/consent">Open consent screen</button>
+                    </div>
+                  </li>
+                  <li data-substep="key.client">
                     <p>Credentials &rarr; <b>Create credentials</b> &rarr; <b>OAuth client ID</b> &rarr;
                     <b>Desktop app</b> &rarr; download the JSON.</p>
+                    <p class="note">
+                      The automatic branch creates the desktop client and adds it to <b>Keys</b>.
+                    </p>
                     <div class="substep-actions">
                       <button class="btn tiny link-out" data-href="https://console.cloud.google.com/apis/credentials">Open credentials</button>
                     </div>
                   </li>
-                  <li>
-                    <p>Paste that JSON into <b>Keys &rarr; Create a key here</b> and authorize. The domain
-                    is detected afterwards, so leave the domain field blank.</p>
+                  <li data-substep="key.authorize">
+                    <p>Authorize the client. The extension opens the consent tab in the same container
+                    and writes the refresh token back to the key.</p>
                     <div class="substep-actions">
                       <button class="btn tiny jump-tab" data-tab="keys">Go to Keys</button>
                     </div>
@@ -643,24 +667,24 @@
               </header>
               <div class="step-body">
                 <ol class="step-actions">
-                  <li>
-                    <p>Add the key in <b>Keys</b>, then press <b>Authorize</b> if it is still a client
-                    JSON.</p>
+                  <li data-substep="run.key">
+                    <p>Add the key in <b>Keys</b>. A bought key with a refresh token is ready; a client
+                    JSON is authorized by the key step above.</p>
                     <div class="substep-actions">
                       <button class="btn tiny jump-tab" data-tab="keys">Go to Keys</button>
                     </div>
                   </li>
-                  <li>
+                  <li data-substep="run.check">
                     <p>Press <b>Check</b>. A green dot means the Directory API answers.</p>
                   </li>
-                  <li>
+                  <li data-substep="run.first">
                     <p>On <b>Run</b>, set the count to 1 and press <b>Start</b>. Watch the console; the
                     lane reports visibility and exit IP.</p>
                     <div class="substep-actions">
                       <button class="btn tiny jump-tab" data-tab="run">Go to Run</button>
                     </div>
                   </li>
-                  <li>
+                  <li data-substep="run.export">
                     <p>Export from <b>Accounts</b>. The cookie is the account &mdash; it is saved before
                     finalise too.</p>
                     <div class="substep-actions">
