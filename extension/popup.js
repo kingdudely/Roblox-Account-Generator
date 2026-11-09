@@ -46,4 +46,11 @@ async function openRunner(tab = null) {
 document.getElementById("open").addEventListener("click", () => openRunner());
 document.getElementById("keys-tab").addEventListener("click", () => openRunner("keys"));
 
-render();
+// Paint the static popup first; the storage read and seat math can land a frame
+// later without making the first click feel dead.
+const scheduleRender = () => {
+  const run = () => render().catch(() => {});
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
+  else setTimeout(run, 0);
+};
+scheduleRender();

@@ -552,16 +552,7 @@ function renderTotp() {
   updateTotp();
 }
 
-function renderConsoleLog() {
-  const body = $("console-body");
-  body.replaceChildren();
-  consoleCount = 0;
-  for (const line of (state.log || []).slice(-600)) appendLogNode(line, false);
-  body.scrollTop = body.scrollHeight;
-}
-
-function appendLogNode(line, autoscroll = true) {
-  const body = $("console-body");
+function logNode(line) {
   const node = document.createElement("div");
   node.className = `line ${line.level || "info"}`;
 
@@ -573,14 +564,31 @@ function appendLogNode(line, autoscroll = true) {
   text.textContent = line.text;
 
   node.append(time, text);
-  body.append(node);
-  consoleCount = body.children.length;
+  return node;
+}
 
-  const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 90;
-  if (autoscroll && nearBottom) body.scrollTop = body.scrollHeight;
+function renderConsoleLog() {
+  const body = $("console-body");
+  const fragment = document.createDocumentFragment();
+  for (const line of (state.log || []).slice(-300)) {
+    fragment.append(logNode(line));
+  }
+  body.replaceChildren(fragment);
+  consoleCount = body.children.length;
+  setText("console-stat", `${consoleCount} lines`);
+  body.scrollTop = body.scrollHeight;
+}
+
+function appendLogNode(line, autoscroll = true) {
+  const body = $("console-body");
+  const nearBottom = autoscroll
+    ? body.scrollHeight - body.scrollTop - body.clientHeight < 90
+    : false;
+
+  body.append(logNode(line));
   while (body.children.length > 1400) body.firstElementChild.remove();
   consoleCount = body.children.length;
-
+  if (autoscroll && nearBottom) body.scrollTop = body.scrollHeight;
   setText("console-stat", `${consoleCount} lines`);
 }
 
@@ -4149,6 +4157,9 @@ function checkBuild() {
 }
 
 async function boot() {
+  // Set the version before any storage or rendering work: the page paints
+  // immediately and the build pill never sits on "v---".
+  checkBuild();
   state = await load();
   wire();
   renderConsoleLog();
@@ -4157,7 +4168,6 @@ async function boot() {
   // ticks should be right immediately, not after a round-trip to Google.
   renderSetup();
   await remember("runner ready", "info");
-  await checkBuild();
 
   setInterval(() => {
     setText("console-clock", new Date().toTimeString().slice(0, 8));
