@@ -2,7 +2,7 @@
 // One identity, one container. The Google cookie jar is the mutex; the container
 // is what lets several of them exist in one browser.
 
-import { api, isFirefox, sleep, withTimeout } from "./api.js";
+import { api, sleep, withTimeout } from "./api.js";
 
 export const SIGNUP = "https://www.roblox.com/CreateAccount";
 export const HOME = "https://www.roblox.com/home";
@@ -28,7 +28,12 @@ export const LANE_COLUMNS = ["blue", "turquoise", "green", "purple", "orange", "
 // ------------------------------------------------------------------ containers
 
 export async function ensureContainer(index) {
-  if (!isFirefox) return { storeId: null, name: "default" };
+  // Firefox has native containers; the CLI adapter supplies the same surface
+  // with one persistent browser context per lane. Check the API at call time so
+  // the adapter can be installed after this module is imported.
+  if (typeof api.contextualIdentities === "undefined") {
+    return { storeId: null, name: "default" };
+  }
   const name = `RAC lane ${index + 1}`;
   const existing = await api.contextualIdentities.query({ name });
   if (existing.length) return { storeId: existing[0].cookieStoreId, name };

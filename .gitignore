@@ -12,6 +12,7 @@ proxiesithink.txt
 
 # regenerable / large
 .venv/
+node_modules/
 __pycache__/
 *.pyc
 models/

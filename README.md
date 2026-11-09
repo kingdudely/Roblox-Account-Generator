@@ -1,21 +1,137 @@
 # Roblox Alt Creator
 
-A browser extension that turns Cloud Identity keys into Roblox accounts.
-Setup instructions, key validation, the run console and the phone-gate decoder
-all live inside the extension.
+A local Node.js CLI that turns Cloud Identity keys into Roblox accounts. It runs
+real Chrome through [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright),
+reuses the extension's JavaScript core and content scripts, and keeps state in a
+local JSON file.
 
-The Workspace tenant and the DuckDNS name are created by hand. Google rejects
-automated Workspace signups as spam, so the extension does not try. It can,
-however, finish an existing tenant: sign in once in a worker tab and it handles
-domain verification, Cloud Identity Free, the admin authenticator, the tenant
-2SV policy and the OAuth key.
+The CLI can:
 
-## Firefox — primary target
+- sign in to the Admin console with a saved admin password and authenticator
+  secret, or leave the password to you;
+- sign in to DuckDNS with the tenant admin Google account, add the subdomain and
+  capture the token;
+- prefill the Cloud Identity signup through the account step, then stop at
+  Google's phone/captcha gate;
+- verify the domain, activate Cloud Identity Free, enrol the admin authenticator,
+  set the tenant 2SV policy, create the Cloud project, enable the Admin SDK, set
+  up the consent screen, add the five scopes, create the desktop OAuth client and
+  authorize the key;
+- import/check/recover keys and create Google identities with the Admin SDK;
+- run Roblox Google-SSO lanes in separate persistent Chrome profiles, including
+  the Google prime, authenticator capture, cookie capture and Roblox finalise.
 
-Firefox is the target browser: containers give each lane its own cookie jar, so
-several sign-ins run in one window. The automatic setup also opens its worker tab
-in a dedicated **RAC setup** container, so the admin/console/consent session is
-isolated from normal browsing.
+The Workspace tenant signup and the phone/captcha gate remain external. The CLI
+does not bypass them. Everything after the gate can be automatic.
+
+## Node CLI
+
+```bash
+npm install
+node bin/rac.js doctor
+node bin/rac.js smoke --headless
+node bin/rac.js help
+```
+
+`npm link` is optional; it makes `rac` available as a command:
+
+```bash
+npm link
+rac doctor
+```
+
+Patchright drives the system Chrome by default (`--channel chrome`). If Chrome
+is not installed, run `npx patchright install chromium` and pass
+`--channel none`.
+
+### Commands
+
+| Command | What it does |
+|---|---|
+| `rac doctor` | checks Node, Patchright, Chrome and trusted input |
+| `rac smoke` | verifies `navigator.webdriver: false` and a trusted click |
+| `rac admin` | opens or signs in to the Admin console |
+| `rac duckdns` | signs in with Google, adds a subdomain and captures the token |
+| `rac signup` | prefills the Cloud Identity signup and stops at the phone gate |
+| `rac setup` | runs the automatic tenant/key sub-steps |
+| `rac key …` | import, list, check, authorize, recover, remove, export |
+| `rac identity …` | create/list/delete identities, check 2SV, mint codes |
+| `rac run` | create identities and run Roblox Google-SSO lanes |
+| `rac export` | write the captured accounts to `accounts.txt` |
+| `rac state` | show the state path and a summary |
+
+### Typical flow
+
+```bash
+# 1. One-time tenant signup. Finish the phone/captcha gate in the window.
+node bin/rac.js signup --subdomain mytenant --contact you@example.com
+
+# 2. Create the DuckDNS subdomain and capture its token.
+node bin/rac.js duckdns --subdomain mytenant --email admin@mytenant.duckdns.org
+
+# 3. Finish the tenant and build/authorize the OAuth key.
+#    Add --totp <base32 secret> if the admin already has 2SV.
+node bin/rac.js setup --subdomain mytenant \
+  --admin-email admin@mytenant.duckdns.org \
+  --admin-password '<admin password>'
+
+# 4. Run a Roblox account.
+node bin/rac.js run --count 1
+
+# 5. Export.
+node bin/rac.js export
+```
+
+If you already have a key:
+
+```bash
+node bin/rac.js key import client_secret_*.json
+node bin/rac.js key authorize
+node bin/rac.js run --count 1
+```
+
+`rac run` deletes the Google identity after a successful Roblox signup by
+default, which frees the Cloud Identity seat. Pass `--keep-google` if you want
+to keep Google sign-in for that account.
+
+State lives outside the repo:
+
+```
+~/.local/share/roblox-alt-creator/state.json
+~/.local/share/roblox-alt-creator/profiles/<name>
+```
+
+Override the root with `RAC_HOME=/path/to/dir`. `state.json` is written with
+mode `0600`. The CLI never writes credentials into the repository.
+
+Admin credentials can also come from the environment instead of the command
+line: `RAC_ADMIN_EMAIL`, `RAC_ADMIN_PASSWORD`, `RAC_TOTP`.
+
+### Profiles
+
+- `setup` is the default profile for `admin`, `duckdns`, `signup` and `setup`.
+- `lane-1` … `lane-N` are the Roblox lane profiles used by `rac run`.
+- Profiles are persistent, so a Google login or DuckDNS login survives a re-run.
+- `--proxy` is supported on the browser commands; `rac run` cycles
+  `settings.proxyUrl` / `settings.proxyList` across lanes.
+
+### Safety boundaries
+
+- No anti-detection guarantee. Patchright hides common automation leaks and
+  produces trusted input, but Google's signup decision is driven by reputation,
+  IP/ASN, phone and behavioural signals as well.
+- The phone/captcha gate is left to a human. `rac signup` fills the form and
+  submits the account step; it does not solve or bypass verification.
+- If the admin already has 2SV but no saved authenticator secret, `rac setup`
+  refuses to change the tenant policy. A phone-only admin would be locked out.
+
+## Firefox extension (optional)
+
+The extension is still in the tree as a GUI and a Firefox-containers lane runner.
+For the CLI, skip to the commands above. Firefox containers give each lane its
+own cookie jar, so several sign-ins run in one window. The extension's automatic
+setup also opens its worker tab in a dedicated **RAC setup** container, so the
+admin/console/consent session is isolated from normal browsing.
 
 ```
 about:debugging#/runtime/this-firefox
@@ -32,7 +148,7 @@ npx web-ext sign --source-dir extension --artifacts-dir dist
 
 Stable Firefox will not load an unsigned extension permanently.
 
-## Chrome / Chromium — optional, one lane
+### Chrome extension build
 
 Chrome has one cookie jar per profile, so it runs one lane. Build the Chrome
 manifest into a separate folder:
@@ -50,11 +166,10 @@ chrome://extensions → Developer mode → Load unpacked → dist/chrome
 Running several Chrome lanes means one Chrome profile per lane; it is not a
 container replacement.
 
-## Patchright CLI (debug companion)
+## Legacy Python Patchright companion
 
-`tools/rac_cli.py` runs the same setup pages in a persistent Chrome profile
-through Patchright. It is for debugging, screenshots, console logging and
-testing trusted input from a normal terminal instead of the extension UI.
+The Node CLI above supersedes this. `tools/rac_cli.py` remains as a small
+diagnostic runner for screenshots, console logging and trusted-input checks.
 
 ```bash
 python3 -m venv .venv
@@ -80,10 +195,13 @@ The CLI does not bypass Google’s phone/captcha or anti-abuse checks. It pauses
 there and leaves the page open for a human. It is a companion to the extension,
 not an anti-detection guarantee.
 
-## First run
+## Extension first run
 
 The runner opens on install. If it does not, click the toolbar icon and choose
 **Open runner**.
+
+This section describes the extension only. CLI users should use the commands
+above.
 
 1. **Keys** — drop the `client_secret_*.apps.googleusercontent.com.json` you
    downloaded from the Cloud console, then press **Authorize** on the tenant row
@@ -167,32 +285,59 @@ a mirror; closing the tab loses nothing.
 ## Layout
 
 ```
+bin/rac.js               CLI entry point
+cli/
+  main.js                command dispatch
+  browser.js             Patchright launch, logging, screenshots
+  content-bridge.js      injects content/google.js + content/setup.js
+  lane-api.js            Playwright adapter for extension/lib/lane.js
+  consent.js             OAuth consent flow and code exchange
+  google.js              Google sign-in driver
+  key-flow.js            key import/check/recover helpers
+  state.js               atomic JSON state store
+  commands/              doctor, smoke, admin, duckdns, signup, setup,
+                         key, identity, run, export, state
 extension/
   manifest.json          Firefox MV3 (containers, background scripts)
   manifest.chrome.json   Chrome MV3 (service worker, one lane)
-  runner.html/.css/.js   the run loop and the whole UI
+  runner.html/.css/.js   the run loop and the whole extension UI
   background.js          opens the runner, owns the log ring
   content/google.js      fills Google's sign-in pages and the 2SV wizard
   content/setup.js       finishes the tenant: Admin console + Cloud console
   content/awake.js       main-world shim: frame clock + visibility for hidden lanes
   lib/                   admin, lanes, keys, consent, QR, storage
 tools/
-  rac_cli.py             Patchright debug companion (setup pages, screenshots)
-  requirements-cli.txt   patchright
+  rac_cli.py             legacy Python Patchright diagnostic runner
+  requirements-cli.txt   patchright (Python)
   e2e.py                 older Firefox lane harness
+package.json             Node CLI dependencies and bin entry
 ```
 
 The Python pipeline that preceded the extension is not part of this tree; it
-remains in the Git history. The extension and the Patchright CLI are
-self-contained.
+remains in the Git history. The Node CLI reuses `extension/lib` and
+`extension/content` directly.
 
 ## Testing
 
-Load the unpacked extension in Firefox (or the Chrome build) and add a key. From
-Setup, save a DuckDNS token/subdomain, tick the step-1 sub-steps and press an
-**Auto** button or **Automate remaining** to check the worker-tab handoff;
-sign-in stops at `accounts.google.com` until a human signs in, which is the
-expected boundary.
+Automated checks:
 
-`tools/e2e.py` is the older Firefox harness; it is legacy but still useful for the
-lane run, identity creation and code minting.
+```bash
+npm test
+```
+
+CLI smoke checks:
+
+```bash
+node bin/rac.js doctor --headless
+node bin/rac.js smoke --headless
+node bin/rac.js setup --dry-run --subdomain test --token 00000000-0000-0000-0000-000000000000
+```
+
+The full CLI integration was exercised against real Chrome: Roblox SSO opened
+Google, the injected content script filled the identifier, and the lane timed out
+at the expected rejected-account screen. Setup and consent paths require a real
+tenant to exercise end to end.
+
+The extension is tested by loading it in Firefox (or the Chrome build) and
+running the same checklist. `tools/e2e.py` is the older Firefox harness; it is
+legacy but still useful for the extension lane path.
