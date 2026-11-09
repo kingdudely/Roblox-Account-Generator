@@ -61,10 +61,10 @@ The runner opens on install. If it does not, click the toolbar icon and choose
      authenticator, and drives the Cloud console. It pauses at the phone gate:
      the QR image and any decoded number/message are shown in the Setup tab, and
      the run resumes when Google lets the page through. A captcha is handled the
-     same way. If a console page changes under it, the tab logs where it stopped
-     and offers a JSON paste box so you can finish the key without leaving the
-     runner. The Setup tab also explains how to get the DuckDNS token and
-     subdomain; the optional fields have **random** buttons.
+     same way. If a console page changes under it, the tab logs where it stopped;
+     use **Go to Keys** to finish the key manually. The Setup tab also explains
+     how to get the DuckDNS token and subdomain; the optional fields have
+     **random** buttons.
    The key row has **Admin** / **Recover admin** (show or reset the tenant admin
    password and mint fresh backup codes using the key) and **JSON** (download the
    key so it is backed up outside extension storage).

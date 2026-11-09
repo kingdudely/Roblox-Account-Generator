@@ -104,11 +104,11 @@ The Setup tab has three modes:
 
 The automatic mode is best-effort against Google's changing console. When a page
 does not match, it says where it stopped and leaves the setup tab open so you can
-take over; the JSON box in the same panel adds and authorizes a Desktop OAuth
-client without leaving the runner. The key row also has **Admin** / **Recover
-admin** (show or reset the tenant admin password and mint fresh backup codes) and
-**JSON** (download the key). The admin password is therefore a convenience, not
-the only way back into the tenant: the key can reset it and mint codes.
+take over; **Go to Keys** in the same panel is the manual JSON import path. The
+key row also has **Admin** / **Recover admin** (show or reset the tenant admin
+password and mint fresh backup codes) and **JSON** (download the key). The admin
+password is therefore a convenience, not the only way back into the tenant: the
+key can reset it and mint codes.
 
 Roblox assigns the username. The username step at `/sso-complete` is skippable;
 the session works without it.

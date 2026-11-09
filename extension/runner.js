@@ -2645,9 +2645,7 @@ const autoSetup = {
   phase: "",
   status: "idle",
   lastUrl: "",
-  log: [],
   phoneShown: false,
-  jsonShown: false,
   projectId: "",
 };
 
@@ -2703,24 +2701,7 @@ function autoProfile() {
 }
 
 function autoLog(text, level = "info") {
-  const line = { t: Date.now(), text: String(text), level };
-  autoSetup.log = [...autoSetup.log, line].slice(-300);
-  renderAutoLog();
   remember(`[auto] ${text}`, level).catch(() => {});
-}
-
-function renderAutoLog() {
-  const box = $("auto-log");
-  if (!box) return;
-  box.replaceChildren(
-    ...autoSetup.log.map((line) => {
-      const span = document.createElement("span");
-      span.className = `auto-line ${line.level}`;
-      span.textContent = `${new Date(line.t).toLocaleTimeString()}  ${line.text}`;
-      return span;
-    })
-  );
-  box.scrollTop = box.scrollHeight;
 }
 
 function renderAutoSetup() {
@@ -2743,11 +2724,30 @@ function renderAutoSetup() {
   if (stop) stop.disabled = !autoSetup.running;
   const open = $("auto-open");
   if (open) open.disabled = !autoSetup.tabId;
+
+  const hasTab = Boolean(autoSetup.tabId);
+  const hasProject = Boolean(autoSetup.projectId);
+  const fallback = $("auto-fallback");
+  if (fallback) {
+    fallback.hidden =
+      autoSetup.phase === "done" || (!hasTab && !hasProject);
+  }
+  const skip = $("auto-continue");
+  if (skip) {
+    const late =
+      /admin\.google\.com|console\.cloud\.google\.com/.test(
+        autoSetup.lastUrl || ""
+      );
+    skip.disabled = !(
+      autoSetup.tabId &&
+      (late || ["domain", "twofa"].includes(autoSetup.phase))
+    );
+  }
+  const credentials = $("auto-credentials");
+  if (credentials) credentials.disabled = !hasProject;
+
   const phone = $("auto-phone");
   if (phone) phone.hidden = !autoSetup.phoneShown;
-  const json = $("auto-json-box");
-  if (json) json.hidden = !autoSetup.jsonShown;
-  renderAutoLog();
 }
 
 function readAutoFields() {
@@ -2895,9 +2895,8 @@ async function startAutoSetup() {
   autoSetup.profile = profile;
   autoSetup.phase = "signup";
   autoSetup.tabId = null;
-  autoSetup.log = [];
+  autoSetup.projectId = "";
   autoSetup.phoneShown = false;
-  autoSetup.jsonShown = false;
   autoSetup.lastUrl = "";
   autoSetup.storeId = await ensureSetupContainer();
   await persistAutoValues({ ...profile, phase: "signup" });
@@ -3154,7 +3153,6 @@ async function handleAutoDomain(message) {
 async function continueToKey() {
   if (!autoSetup.tabId) return;
   autoSetup.phase = "key";
-  autoSetup.jsonShown = true;
   autoStatus("creating the Cloud project");
   autoLog("opening Google Cloud project creation");
   renderAutoSetup();
@@ -3163,6 +3161,8 @@ async function continueToKey() {
 
 async function handleAutoDomainVerified() {
   autoLog("domain verified; opening Cloud Identity Free");
+  autoSetup.phase = "domain";
+  renderAutoSetup();
   await setSetup((draft) => {
     draft.done.tenant = true;
   });
@@ -3172,10 +3172,12 @@ async function handleAutoDomainVerified() {
 
 async function handleAutoBillingDone() {
   autoLog("Cloud Identity Free is active");
+  autoSetup.phase = "twofa";
+  renderAutoSetup();
   autoStatus("enrolling the admin authenticator");
   await api.tabs.update(autoSetup.tabId, { url: AUTO_ADMIN_2SV }).catch(() => {});
   autoLog(
-    "the admin's 2SV wizard is open; if it does not advance, finish it in the setup tab and press Continue to key",
+    "the admin's 2SV wizard is open; if it does not advance, finish it in the setup tab",
     "warn"
   );
 }
@@ -3251,6 +3253,7 @@ async function handleAutoClient(message) {
   });
   autoLog("key authorized — automatic setup is done", "ok");
   autoStatus("done — key ready");
+  autoSetup.phase = "done";
   autoSetup.running = false;
   if (autoSetup.tabId) {
     api.tabs
@@ -3258,18 +3261,6 @@ async function handleAutoClient(message) {
       .catch(() => {});
   }
   renderAutoSetup();
-}
-
-async function loadAutoJson(text) {
-  try {
-    const client = parseClient(text);
-    await handleAutoClient({
-      client_id: client.client_id,
-      client_secret: client.client_secret,
-    });
-  } catch (error) {
-    await remember(`automatic setup: ${error.message || error}`, "error");
-  }
 }
 
 function wireAutoSetup() {
@@ -3326,6 +3317,7 @@ function wireAutoSetup() {
   $("auto-open")?.addEventListener("click", () => {
     focusAutoTab().catch(() => {});
   });
+  $("auto-keys")?.addEventListener("click", () => switchTab("keys"));
   $("auto-continue")?.addEventListener("click", () => {
     continueToKey().catch((error) =>
       remember(`automatic setup: ${error.message || error}`, "error")
@@ -3356,20 +3348,6 @@ function wireAutoSetup() {
     }
     await sleep(1200);
     await scanAutoPhone();
-  });
-  $("auto-json-load")?.addEventListener("click", () => {
-    loadAutoJson($("auto-json")?.value || "").catch(() => {});
-  });
-  $("auto-json-file")?.addEventListener("click", () => {
-    $("auto-json-input")?.click();
-  });
-  $("auto-json-input")?.addEventListener("change", async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    const text = await file.text();
-    const box = $("auto-json");
-    if (box) box.value = text;
-    await loadAutoJson(text);
   });
 }
 
@@ -4027,6 +4005,7 @@ function wire() {
     if (message?.type === "setup-project" && message.project) {
       autoSetup.projectId = String(message.project);
       autoLog(`Cloud project id: ${autoSetup.projectId}`);
+      renderAutoSetup();
       return false;
     }
     if (message?.type === "log-line" && message.line) {

@@ -239,6 +239,32 @@
                 <b>Internal</b> OAuth app when Google offers it, so the key does
                 not expire after seven days.
               </p>
+              <details class="auto-help" open>
+                <summary>
+                  <span>How to get the DuckDNS token and subdomain</span>
+                  <span class="hint">required</span>
+                </summary>
+                <ol>
+                  <li>Open DuckDNS and sign in with Google, GitHub, Reddit or Twitter.</li>
+                  <li>
+                    Add a unique subdomain, e.g. <span class="mono">rac-novaharbor</span>.
+                    One DuckDNS account holds up to five.
+                  </li>
+                  <li>
+                    Copy the account token shown at the top of the domains page.
+                    One token covers every subdomain in that account.
+                  </li>
+                  <li>
+                    Paste the token and subdomain below. The extension writes the
+                    <span class="mono">google-site-verification</span> TXT record
+                    for you; you do not need to touch DNS.
+                  </li>
+                </ol>
+                <div class="buttons">
+                  <button class="btn tiny link-out" data-href="https://www.duckdns.org/domains">Open DuckDNS</button>
+                </div>
+              </details>
+
               <div class="controls">
                 <label class="field">
                   <span>Recovery email</span>
@@ -255,31 +281,11 @@
                 </label>
               </div>
 
-              <details class="auto-help" open>
-                <summary>How to get the DuckDNS token and subdomain</summary>
-                <ol>
-                  <li>Open DuckDNS and sign in with Google, GitHub, Reddit or Twitter.</li>
-                  <li>
-                    Add a unique subdomain, e.g. <span class="mono">rac-novaharbor</span>.
-                    One DuckDNS account holds up to five.
-                  </li>
-                  <li>
-                    Copy the account token shown at the top of the domains page.
-                    One token covers every subdomain in that account.
-                  </li>
-                  <li>
-                    Paste the token and subdomain above. The extension writes the
-                    <span class="mono">google-site-verification</span> TXT record
-                    for you; you do not need to touch DNS.
-                  </li>
-                </ol>
-                <div class="buttons">
-                  <button class="btn tiny link-out" data-href="https://www.duckdns.org/domains">Open DuckDNS</button>
-                </div>
-              </details>
-
               <details class="auto-optional">
-                <summary>Optional: business name, admin username, admin password</summary>
+                <summary>
+                  <span>Optional: business name, admin username, admin password</span>
+                  <span class="hint">generated if blank</span>
+                </summary>
                 <div class="controls">
                   <label class="field">
                     <span>Business name</span>
@@ -304,13 +310,29 @@
                   the key.
                 </p>
               </details>
+
               <div class="buttons">
                 <button id="auto-start" class="btn primary">Start automatic setup</button>
-                <button id="auto-stop" class="btn danger">Stop</button>
-                <button id="auto-open" class="btn ghost">Open setup tab</button>
-                <button id="auto-continue" class="btn ghost">Continue to key</button>
-                <button id="auto-credentials" class="btn ghost">Open credentials</button>
+                <button id="auto-stop" class="btn danger" disabled>Stop</button>
+                <button id="auto-open" class="btn ghost" disabled>Show Google signup tab</button>
+                <button id="auto-keys" class="btn ghost">Go to Keys</button>
               </div>
+
+              <details class="auto-fallback" id="auto-fallback" hidden>
+                <summary>
+                  <span>Manual fallback</span>
+                  <span class="hint">only if the automatic flow stalls</span>
+                </summary>
+                <p class="note">
+                  The automatic flow normally creates and authorizes the key
+                  itself. Use these only if Google's console page changed and it
+                  stopped short. For a client JSON, use <b>Go to Keys</b>.
+                </p>
+                <div class="buttons">
+                  <button id="auto-continue" class="btn tiny ghost" disabled>Skip to Cloud project</button>
+                  <button id="auto-credentials" class="btn tiny ghost" disabled>Open Google credentials</button>
+                </div>
+              </details>
 
               <div class="auto-phone" id="auto-phone" hidden>
                 <div class="card-head">
@@ -346,25 +368,6 @@
                   </div>
                 </div>
               </div>
-
-              <div class="auto-json" id="auto-json-box" hidden>
-                <div class="card-head">
-                  <h2>Finish the key</h2>
-                  <span class="hint">if the console stops short</span>
-                </div>
-                <p class="note">
-                  Paste the Desktop OAuth client JSON here. The extension will add the
-                  key and authorize it as the new admin in the same container.
-                </p>
-                <textarea id="auto-json" rows="4" placeholder='{"installed":{"client_id":"...","client_secret":"..."}}'></textarea>
-                <div class="buttons">
-                  <button id="auto-json-load" class="btn primary">Add and authorize</button>
-                  <button id="auto-json-file" class="btn ghost">Choose file</button>
-                  <input id="auto-json-input" type="file" accept=".json,application/json" hidden />
-                </div>
-              </div>
-
-              <div class="auto-log" id="auto-log" aria-live="polite"></div>
             </div>
 
             <div class="card setup-progress">
