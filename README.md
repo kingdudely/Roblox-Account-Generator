@@ -50,6 +50,36 @@ chrome://extensions → Developer mode → Load unpacked → dist/chrome
 Running several Chrome lanes means one Chrome profile per lane; it is not a
 container replacement.
 
+## Patchright CLI (debug companion)
+
+`tools/rac_cli.py` runs the same setup pages in a persistent Chrome profile
+through Patchright. It is for debugging, screenshots, console logging and
+testing trusted input from a normal terminal instead of the extension UI.
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r tools/requirements-cli.txt
+
+.venv/bin/python tools/rac_cli.py doctor
+.venv/bin/python tools/rac_cli.py smoke --headless
+.venv/bin/python tools/rac_cli.py admin
+.venv/bin/python tools/rac_cli.py duckdns
+.venv/bin/python tools/rac_cli.py signup
+.venv/bin/python tools/rac_cli.py open https://example.com --wait 5 --screenshot example.png
+```
+
+- Headful is the default for `admin`, `duckdns`, `signup` and `open`. `smoke`
+  and `doctor` default to headless.
+- `--log-console` prints page console output and page errors.
+- `--screenshot` writes to `debug/` unless an absolute path is given.
+- The persistent profile defaults to
+  `~/.local/share/roblox-alt-creator/patchright-profile`, outside the repo.
+- `--proxy`, `--proxy-user` and `--proxy-pass` are supported.
+
+The CLI does not bypass Google’s phone/captcha or anti-abuse checks. It pauses
+there and leaves the page open for a human. It is a companion to the extension,
+not an anti-detection guarantee.
+
 ## First run
 
 The runner opens on install. If it does not, click the toolbar icon and choose
@@ -146,10 +176,15 @@ extension/
   content/setup.js       finishes the tenant: Admin console + Cloud console
   content/awake.js       main-world shim: frame clock + visibility for hidden lanes
   lib/                   admin, lanes, keys, consent, QR, storage
+tools/
+  rac_cli.py             Patchright debug companion (setup pages, screenshots)
+  requirements-cli.txt   patchright
+  e2e.py                 older Firefox lane harness
 ```
 
 The Python pipeline that preceded the extension is not part of this tree; it
-remains in the Git history. The extension is self-contained.
+remains in the Git history. The extension and the Patchright CLI are
+self-contained.
 
 ## Testing
 
