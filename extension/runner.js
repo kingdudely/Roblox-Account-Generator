@@ -2320,7 +2320,22 @@ async function readLoginAudit() {
 async function saveDuck(fields) {
   await mutate((draft) => {
     draft.duckdns = { ...(draft.duckdns || {}), ...fields };
+    // Token and subdomain are the same values in Manual step 1 and in the
+    // Automatic panel. Keep the automatic copy in step with a manual edit.
+    if (fields.token !== undefined || fields.subdomain !== undefined) {
+      draft.setup.auto = {
+        ...(draft.setup.auto || {}),
+        ...(fields.token !== undefined ? { token: fields.token } : {}),
+        ...(fields.subdomain !== undefined
+          ? { subdomain: fields.subdomain }
+          : {}),
+      };
+    }
   });
+  if (autoDraft) {
+    if (fields.token !== undefined) autoDraft.token = fields.token;
+    if (fields.subdomain !== undefined) autoDraft.subdomain = fields.subdomain;
+  }
   state = await load();
   renderDuckdns();
   renderSetup();
@@ -2815,10 +2830,13 @@ async function persistAutoValues(values) {
       token: values.token || "",
       phase: values.phase || draft.setup.auto?.phase || "",
     };
-    if (values.token) draft.duckdns.token = values.token;
-    if (values.subdomain) draft.duckdns.subdomain = values.subdomain;
+    if (values.token !== undefined) draft.duckdns.token = values.token || "";
+    if (values.subdomain !== undefined) {
+      draft.duckdns.subdomain = values.subdomain || "";
+    }
   });
   state = await load();
+  renderDuckdns();
 }
 
 async function ensureSetupContainer() {
