@@ -1046,9 +1046,9 @@ async function finaliseOnTab(tabId, timeout, shouldStop, log, options = {}) {
         continue;
       }
 
-      // Continue was clicked but the page did not move. Give it 8 seconds,
+      // Continue was clicked but the page did not move. Give it 15 seconds,
       // then reload rather than clicking a dead button forever.
-      if (nextClickedAt && Date.now() - nextClickedAt > 8000 && reloads < 3) {
+      if (nextClickedAt && Date.now() - nextClickedAt > 15_000 && reloads < 3) {
         reloads += 1;
         nextClickedAt = 0;
         log(`ui finalise: still on /not-approved after submit — reloading (${reloads}/3)`);
