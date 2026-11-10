@@ -42,6 +42,7 @@ Options:
   --proxy <url>           proxy
   --timeout <seconds>     per-step form timeout (default: 120)
   --manual                only open the signup page; do not fill anything
+  --check-form            fill through the admin step, verify, then stop
   --keep-open             leave the browser open after the tenant is created
   --screenshot <file>     save a screenshot under debug/
   --verbose               print page console output
@@ -50,28 +51,76 @@ Options:
 
 export const summary = "fill the Cloud Identity signup and drive the phone/QR gate";
 
-async function visibleInputs(page) {
+export function placeholderEmail(subdomain) {
+  const name = String(subdomain || "tenant")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "")
+    .slice(0, 40);
+  return `rac-${name || "tenant"}@example.com`;
+}
+
+async function editableInputs(page) {
   return page.locator(
-    'input[type="text"]:visible, input[type="email"]:visible, input[type="password"]:visible, input:not([type]):visible'
+    'input[type="text"]:visible:not([readonly]):not([disabled]), ' +
+      'input[type="email"]:visible:not([readonly]):not([disabled]), ' +
+      'input[type="password"]:visible:not([readonly]):not([disabled]), ' +
+      'input:not([type]):visible:not([readonly]):not([disabled])'
   );
 }
 
 async function fillFirst(page, value, index = 0) {
-  const inputs = await visibleInputs(page);
+  const inputs = await editableInputs(page);
   const count = await inputs.count();
-  if (count <= index) throw new Error(`expected a visible text input at position ${index + 1}, found ${count}`);
+  if (count <= index) throw new Error(`expected an editable input at position ${index + 1}, found ${count}`);
   await inputs.nth(index).fill(value);
 }
 
 async function fillByAria(page, patterns, value) {
   for (const pattern of patterns) {
-    const locator = page.locator(`input[aria-label*="${pattern}" i]:visible`);
+    const locator = page.locator(
+      `input[aria-label*="${pattern}" i]:visible:not([readonly]):not([disabled])`
+    );
     if (await locator.count()) {
       await locator.first().fill(value);
       return true;
     }
   }
   return false;
+}
+
+// The account step has a readonly username preview before the real field.
+// Prefer the stable IDs from Google's form, then fall back to editable inputs.
+export async function fillAccountStep(page, adminUser, password) {
+  const username = page
+    .locator(
+      '#ucc-14:visible, input[autocomplete="off"][maxlength="64"]:visible, input[type="text"]:visible:not([readonly]):not([disabled])'
+    )
+    .first();
+  const passwords = page.locator(
+    '#ucc-15:visible, #ucc-16:visible, input[type="password"]:visible:not([readonly]):not([disabled])'
+  );
+
+  if (!(await username.count())) {
+    throw new Error("could not find the editable username field on the signup account step");
+  }
+  await username.fill(adminUser);
+  const userValue = await username.inputValue().catch(() => "");
+  if (userValue !== adminUser) {
+    throw new Error(`username field did not accept the value (got ${JSON.stringify(userValue)})`);
+  }
+
+  const count = await passwords.count();
+  if (count < 2) {
+    throw new Error(`expected two editable password fields, found ${count}`);
+  }
+  await passwords.nth(0).fill(password);
+  await passwords.nth(1).fill(password);
+  const firstPassword = await passwords.nth(0).inputValue().catch(() => "");
+  const secondPassword = await passwords.nth(1).inputValue().catch(() => "");
+  if (firstPassword !== password || secondPassword !== password) {
+    throw new Error("one of the password fields did not accept the value");
+  }
+  return { username: userValue, passwordLength: firstPassword.length };
 }
 
 async function clickButton(page, names) {
@@ -101,12 +150,20 @@ async function bodyText(page) {
 
 async function maybeFillPassword(page, password) {
   if (!password) return false;
-  const field = page.locator('input[type="password"]:visible').first();
-  if (!(await field.count().catch(() => 0))) return false;
+  const fields = page.locator(
+    'input[type="password"]:visible:not([readonly]):not([disabled])'
+  );
+  const count = await fields.count().catch(() => 0);
+  // The signup account step has password + confirm. A Google sign-in page has
+  // one password field. Do not touch the signup form after Agree.
+  if (count !== 1) return false;
+  const field = fields.first();
   const current = await field.inputValue().catch(() => "");
-  if (!current) await field.fill(password).catch(() => {});
+  if (!current) {
+    await field.fill(password).catch(() => {});
+    info("admin password filled; continuing");
+  }
   await clickButton(page, ["Next", "Sign in", "Continue"]).catch(() => {});
-  info("admin password filled; continuing");
   return true;
 }
 
@@ -189,6 +246,7 @@ export async function run(argv) {
       proxy: { type: "string" },
       timeout: { type: "string", default: "120" },
       manual: { type: "boolean", default: false },
+      "check-form": { type: "boolean", default: false },
       "keep-open": { type: "boolean", default: false },
       screenshot: { type: "string" },
       verbose: { type: "boolean", default: false },
@@ -213,7 +271,8 @@ export async function run(argv) {
     (subdomain ? subdomain.replace(/-+/g, " ").replace(/\b\w/g, (ch) => ch.toUpperCase()) : "RAC tenant");
   const first = values.first || saved.firstName || "Camille";
   const last = values.last || saved.lastName || "Bianchi";
-  const contact = values.contact || saved.recoveryEmail || saved.adminEmail || "";
+  const contact =
+    values.contact || saved.recoveryEmail || placeholderEmail(subdomain);
   const adminUser = String(values.admin || saved.adminUser || "admin")
     .trim()
     .toLowerCase()
@@ -252,6 +311,9 @@ export async function run(argv) {
   info(`business: ${business}`);
   info(`domain:   ${domain}`);
   info(`admin:    ${adminUser}@${domain}`);
+  if (/@example\.(com|org)$/i.test(contact)) {
+    info(`recovery: ${contact} (placeholder; pass --contact for a real one)`);
+  }
 
   const context = await launchContext({
     profile: values.profile,
@@ -320,9 +382,20 @@ export async function run(argv) {
     await waitPath(page, /\/signup\/account/, timeout);
 
     // Step 5: admin username + password + agreement.
-    await fillFirst(page, adminUser, 0);
-    await fillFirst(page, password, 1);
-    await fillFirst(page, password, 2);
+    await fillAccountStep(page, adminUser, password);
+
+    if (values["check-form"]) {
+      ok("signup form filled correctly; stopping before Agree");
+      if (values.screenshot) {
+        await fs.mkdir(DEBUG_ROOT, { recursive: true });
+        const file = path.isAbsolute(values.screenshot)
+          ? values.screenshot
+          : path.join(DEBUG_ROOT, values.screenshot);
+        await page.screenshot({ path: file, fullPage: true }).catch(() => {});
+        info(`screenshot: ${file}`);
+      }
+      return 0;
+    }
 
     if (values.phone) await maybeFillPhone(page, values.phone);
     const agreed = await clickButton(page, ["Agree and continue"]);
@@ -353,9 +426,14 @@ export async function run(argv) {
 
       if (looksLikeRejection(text)) {
         await saveDebug(page, "signup-rejected").catch(() => {});
+        const domainBusy = /domain.*(?:already|registered|in use)|already.*(?:registered|in use).*domain/i.test(
+          text
+        );
         throw new Error(
           `Google rejected the signup: ${oneLine(text, 220) || "no message"} — ` +
-            "wait a while or try a different network/phone; this is Google's anti-abuse check, not a CLI bug"
+            (domainBusy
+              ? "that domain is already registered; rerun with `--subdomain <new-name>`"
+              : "wait a while or try a different network/phone; this is Google's anti-abuse check, not a CLI bug")
         );
       }
 

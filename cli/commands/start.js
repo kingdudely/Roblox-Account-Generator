@@ -1,8 +1,12 @@
 import { spawn } from "node:child_process";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { makeAdminPassword } from "../../extension/lib/names.js";
 import { buildPlan, statusModel, usableKey } from "../flow/plan.js";
+import { keyJson } from "../key-flow.js";
+import { APP_HOME } from "../paths.js";
 import {
   checkSubdomainAvailability,
   cleanDomain,
@@ -12,7 +16,8 @@ import {
   titleCase,
 } from "../flow/domain.js";
 import { load, mutate } from "../state.js";
-import { ask, color, error, info, ok, phase, warn } from "../util.js";
+import { color, error, info, ok, phase, warn } from "../util.js";
+import { placeholderEmail } from "./signup.js";
 
 const BIN = fileURLToPath(new URL("../../bin/rac.js", import.meta.url));
 
@@ -49,6 +54,8 @@ Options:
   --proxy <url>          proxy for every browser step
   --headless             not recommended on the first run (phone gates need a window)
   --keep-open            keep the lane browsers open after the Roblox run
+  --minimal-state        after the key is verified, clear admin password/name/phone
+  --forget-admin         alias for --minimal-state
   --verbose              print page console output
   --help                 show this help
 
@@ -71,6 +78,31 @@ function cleanAdminUser(value) {
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9._-]/g, "") || "admin";
+}
+
+async function exportKeyArtifact(state) {
+  const key = usableKey(state);
+  if (!key) return "";
+  const domain =
+    key.domain || state.setup?.auto?.domain || state.duckdns?.subdomain || "tenant";
+  const name = String(domain).replace(/[^a-zA-Z0-9._-]+/g, "-");
+  const dir = path.join(APP_HOME, "keys");
+  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  const file = path.join(dir, `${name}.json`);
+  const payload = keyJson(key, { secrets: true });
+  await fs.writeFile(file, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
+  return file;
+}
+
+async function scrubTenantSecrets() {
+  await mutate((draft) => {
+    draft.setup.auto.adminPassword = "";
+    draft.setup.auto.businessName = "";
+    draft.setup.auto.firstName = "";
+    draft.setup.auto.lastName = "";
+    draft.settings.phoneNumber = "";
+    draft.phone = { number: "", body: "", payload: "", source: "" };
+  });
 }
 
 function runChild(command, args) {
@@ -157,14 +189,17 @@ async function resolveConfig(values, { persist = true } = {}) {
     if (!check.available && !check.unknown) {
       const picked = await pickSubdomain({ requested: "", token: "" });
       warn(
-        `${subdomain}.duckdns.org already has ${check.records.join(", ")} records; ` +
-          `using ${picked.domain} instead`
+        `${subdomain}.duckdns.org already has ${check.records.join(", ")} records ` +
+          `(checked with dns.google + local DNS); using ${picked.domain} instead`
       );
       subdomain = picked.subdomain;
     } else if (check.unknown) {
-      warn(`could not confirm whether ${subdomain}.duckdns.org is free; continuing`);
+      warn(
+        `could not confirm whether ${subdomain}.duckdns.org is free ` +
+          "(dns.google and the local resolver were inconclusive); continuing"
+      );
     } else {
-      info(`DuckDNS subdomain: ${subdomain}.duckdns.org (free)`);
+      info(`DuckDNS subdomain: ${subdomain}.duckdns.org (free; checked with dns.google)`);
     }
   }
 
@@ -180,28 +215,21 @@ async function resolveConfig(values, { persist = true } = {}) {
     values.contact || saved.recoveryEmail || process.env.RAC_CONTACT_EMAIL || ""
   ).trim();
   if (!validEmail(contact)) {
-    if (process.stdin.isTTY && !values.yes) {
-      console.log("");
-      console.log("Google needs a recovery email that is not inside the tenant domain.");
-      while (!validEmail(contact)) {
-        contact = String(await ask("Recovery email: ")).trim();
-      }
-    } else {
-      throw new Error(
-        "a real recovery email is required for the first run: " +
-          "pass --contact you@example.com or set RAC_CONTACT_EMAIL"
-      );
-    }
+    contact = placeholderEmail(subdomain);
+    info(`recovery email: ${contact} (placeholder; pass --contact for a real one)`);
   }
 
   const adminUser = cleanAdminUser(values.admin || saved.adminUser || "admin");
   const switchingTenant = Boolean(
     previousSubdomain && subdomain && previousSubdomain !== subdomain && !tenantExists
   );
+  const existingKey = usableKey(state);
   const generatedPassword =
-    !values.password && (!saved.adminPassword || switchingTenant);
+    !existingKey && !values.password && (!saved.adminPassword || switchingTenant);
   const password = String(
-    values.password || (!switchingTenant && saved.adminPassword) || makeAdminPassword()
+    values.password ||
+      (!switchingTenant && saved.adminPassword) ||
+      (existingKey ? "" : makeAdminPassword())
   );
   const business = String(
     values.business || saved.businessName || titleCase(subdomain) || "RAC tenant"
@@ -398,6 +426,8 @@ export async function run(argv) {
       "login-timeout": { type: "string", default: "600" },
       lanes: { type: "string", default: "1" },
       "keep-open": { type: "boolean", default: false },
+      "minimal-state": { type: "boolean", default: false },
+      "forget-admin": { type: "boolean", default: false },
       verbose: { type: "boolean", default: false },
       help: { type: "boolean", default: false },
     },
@@ -448,7 +478,20 @@ export async function run(argv) {
 
   if (!plan.length) {
     ok("everything selected is already done");
-    const model = statusModel(cfg.state);
+    const keyFile = await exportKeyArtifact(cfg.state).catch((error) => {
+      warn(`could not export the key JSON: ${error.message || error}`);
+      return "";
+    });
+    if (keyFile) console.log(`key json: ${keyFile}`);
+    if (values["minimal-state"] || values["forget-admin"]) {
+      if (keyFile) {
+        await scrubTenantSecrets();
+        ok("tenant secrets cleared; the key JSON is the durable credential");
+      } else {
+        warn("not scrubbing the admin secrets because the key JSON export failed");
+      }
+    }
+    const model = statusModel(await load());
     console.log(`next: ${model.next}`);
     return 0;
   }
@@ -481,12 +524,6 @@ export async function run(argv) {
 
     if (code !== 0) {
       console.log("");
-      if (step.id === "signup") {
-        warn(
-          "if you already created this tenant, run `rac start --from duckdns`; " +
-            "if the name belongs to someone else, rerun with `--subdomain <new-name>`"
-        );
-      }
       if (step.id === "duckdns") {
         warn(
           "if DuckDNS rejected the tenant admin, run `rac duckdns` and sign in with any Google account, " +
@@ -495,7 +532,7 @@ export async function run(argv) {
       }
       if (code === 2) {
         warn("that step needs you. Finish it in the browser, then run `npm run create-tenant` again.");
-      } else {
+      } else if (step.id !== "signup") {
         error(`${step.id} stopped with exit code ${code}`);
       }
       return code;
@@ -503,17 +540,31 @@ export async function run(argv) {
     state = await load();
   }
 
-  const finalState = await load();
+  let finalState = await load();
+  const keyFile = await exportKeyArtifact(finalState).catch((error) => {
+    warn(`could not export the key JSON: ${error.message || error}`);
+    return "";
+  });
+  if (values["minimal-state"] || values["forget-admin"]) {
+    if (keyFile) {
+      await scrubTenantSecrets();
+      finalState = await load();
+      ok("tenant secrets cleared; the key JSON is the durable credential");
+    } else {
+      warn("not scrubbing the admin secrets because the key JSON export failed");
+    }
+  }
   const model = statusModel(finalState);
   console.log("");
   console.log(color.green("━━━━━━━━━━━━━━━━ tenant ready ━━━━━━━━━━━━━━━━"));
   console.log(`  tenant   ${model.domain || cfg.domain}`);
   console.log(`  admin    ${model.admin || cfg.adminEmail}`);
-  if (cfg.generatedPassword) {
+  if (cfg.generatedPassword && !(values["minimal-state"] || values["forget-admin"])) {
     console.log(`  password ${cfg.password}`);
     warn("save that admin password and your state.json somewhere safe");
   }
   if (model.key) console.log(`  key      ${model.key.label || model.key.id}`);
+  if (keyFile) console.log(`  key json ${keyFile}`);
   console.log(`  accounts ${model.accounts.live} live${model.accounts.pending ? `, ${model.accounts.pending} pending` : ""}`);
   if (accounts > 0) console.log(`  export   accounts.txt`);
   console.log("");

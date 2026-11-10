@@ -39,7 +39,7 @@ the CLI resumes automatically when the page moves on.
 
 | Step | When | What to do |
 |---|---|---|
-| Recovery email | once, first run | Pass `--contact you@example.com` or answer the prompt. It must be outside the tenant domain. |
+| Recovery email | only if you want one | A fake `rac-<subdomain>@example.com` is used by default. Pass `--contact you@example.com` for a real recovery address. |
 | Google phone/QR check | once per tenant | Scan the QR code with your phone, or send the SMS the CLI extracts. |
 | Captcha / extra 2SV | occasionally | The browser is focused and the terminal beeps. Solve it there; the run resumes. |
 | Roblox captcha | occasionally | Same handoff: the lane tab is focused and the run waits. |
@@ -88,6 +88,7 @@ the destination number/message so you can send it directly. See
 | `rac admin` | Open or sign in to the Admin console |
 | `rac doctor` / `rac smoke` | Check Patchright, Chrome and trusted input |
 | `rac state` | Show paths and a raw summary |
+| `rac state scrub` | Clear admin password/company/name/phone; keep the key |
 
 `rac` with no arguments prints the status dashboard. `rac help` prints the
 grouped command list.
@@ -96,8 +97,10 @@ grouped command list.
 
 - `--subdomain <name>` — use a specific DuckDNS name instead of a generated one.
 - `--token <token>` — reuse an existing DuckDNS account token.
-- `--contact <email>` — recovery email; saved after the first run.
+- `--contact <email>` — real recovery email (default: a fake `example.com` placeholder).
 - `--password <value>` — admin password; generated and saved by default.
+- `--minimal-state` — after the key is verified, clear the admin password, company
+  name, first/last name and phone. `--forget-admin` is an alias.
 - `--phone <number>` — your number for the "Google texts you" gate.
 - `--from <step>` — force `signup`, `duckdns`, `setup` or `accounts`.
 - `--dry-run` — print the plan without opening a browser.
@@ -109,12 +112,20 @@ grouped command list.
 
 ```
 ~/.local/share/roblox-alt-creator/state.json
+~/.local/share/roblox-alt-creator/keys/<domain>.json
 ~/.local/share/roblox-alt-creator/profiles/setup
 ~/.local/share/roblox-alt-creator/profiles/lane-1 … lane-N
 ```
 
 Override the root with `RAC_HOME=/path/to/dir`. The state file is written with
-mode `0600` and contains the admin password, TOTP secret and keys. Back it up.
+mode `0600`. `rac start` also writes the durable OAuth key JSON (client id,
+secret and refresh token) to `keys/<domain>.json`, mode `0600`; that file is
+enough to run accounts later.
+
+The admin password and company/name fields are only used to drive the one-time
+setup (DuckDNS, Admin console and consent). Pass `--minimal-state` to clear them
+after the key is verified. The key can reset the admin password later with
+`rac key recover`.
 
 The `setup` profile is shared by signup, DuckDNS and setup, so the Google session
 survives between steps. Lane profiles are separate cookie jars for Roblox runs.
@@ -177,5 +188,10 @@ and legacy Python notes; the CLI commands in that file are outdated.
 npm test
 node bin/rac.js doctor --headless
 node bin/rac.js smoke --headless
-node bin/rac.js start --dry-run --contact you@example.com
+node bin/rac.js start --dry-run
+node bin/rac.js signup --check-form --subdomain rac-checkform --contact fake@example.com
 ```
+
+`signup --check-form` fills the real Google form through the admin step and
+stops before "Agree and continue", so it never creates a tenant. Use it to
+verify the selectors after a Google page change.

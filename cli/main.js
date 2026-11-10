@@ -83,7 +83,7 @@ export async function main(argv) {
     return 0;
   }
   if (name === "--version" || name === "version") {
-    console.log("rac 0.10.0");
+    console.log("rac 0.10.1");
     return 0;
   }
   const resolved = ALIASES[name] || name;

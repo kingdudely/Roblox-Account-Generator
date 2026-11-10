@@ -18,8 +18,9 @@ const {
   fullDomain: flowFullDomain,
   randomSubdomain,
 } = await import("../cli/flow/domain.js");
-const { findChrome } = await import("../cli/browser.js");
+const { findChrome, launchContext } = await import("../cli/browser.js");
 const { createLaneApi, installLaneApi } = await import("../cli/lane-api.js");
+const { fillAccountStep } = await import("../cli/commands/signup.js");
 const lane = await import("../extension/lib/lane.js");
 
 test.after(async () => {
@@ -118,8 +119,33 @@ test("domain helpers normalise and generate safe names", () => {
   assert.equal(cleanSubdomain("My-Tenant.duckdns.org"), "my-tenant");
   assert.equal(cleanDomain("https://My-Tenant.duckdns.org/foo"), "my-tenant.duckdns.org");
   assert.equal(flowFullDomain("My-Tenant"), "my-tenant.duckdns.org");
-  assert.match(randomSubdomain(), /^rac-[a-z2-9]{8}$/);
+  assert.match(randomSubdomain(), /^[a-z]+-[a-z]+-\d{3}$/);
 });
+
+test(
+  "signup account step ignores the readonly username preview",
+  { skip: !findChrome(), timeout: 60_000 },
+  async () => {
+    const context = await launchContext({ profile: "account-fill-test", headless: true });
+    try {
+      const page = context.pages()[0] || (await context.newPage());
+      await page.setContent(`
+        <input readonly class="vphrPc" type="text" autocomplete="username" value="">
+        <input id="ucc-14" type="text" maxlength="64">
+        <input id="ucc-15" type="password">
+        <input id="ucc-16" type="password">
+      `);
+      const result = await fillAccountStep(page, "admin", "Sup3r-secret");
+      assert.equal(result.username, "admin");
+      assert.equal(await page.locator("#ucc-14").inputValue(), "admin");
+      assert.equal(await page.locator("#ucc-15").inputValue(), "Sup3r-secret");
+      assert.equal(await page.locator("#ucc-16").inputValue(), "Sup3r-secret");
+      assert.equal(await page.locator("input.vphrPc").inputValue(), "");
+    } finally {
+      await context.close().catch(() => {});
+    }
+  }
+);
 
 test("lane adapter bridges tabs, scripts and cookies", { skip: !findChrome(), timeout: 120_000 }, async () => {
   const laneApi = await createLaneApi({

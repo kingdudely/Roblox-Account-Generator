@@ -1,6 +1,6 @@
 {
   "name": "roblox-alt-creator",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "private": true,
   "type": "module",
   "description": "Local CLI for creating Cloud Identity tenants, OAuth keys and Roblox accounts",
