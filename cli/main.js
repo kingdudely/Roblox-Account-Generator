@@ -14,6 +14,7 @@ import * as exportCommand from "./commands/export.js";
 import * as stateCommand from "./commands/state.js";
 import * as start from "./commands/start.js";
 import * as status from "./commands/status.js";
+import * as recordSignup from "./commands/record-signup.js";
 
 const COMMANDS = {
   start,
@@ -29,6 +30,7 @@ const COMMANDS = {
   run: runCommand,
   export: exportCommand,
   state: stateCommand,
+  "record-signup": recordSignup,
 };
 
 const ALIASES = {
@@ -39,6 +41,7 @@ const ALIASES = {
   continue: "start",
   progress: "status",
   accounts: "run",
+  record: "record-signup",
 };
 
 function help() {
@@ -61,8 +64,9 @@ One-time setup pieces:
   rac setup                 just the tenant/key steps
   rac admin                 open the Admin console
 
-Checks:
+Checks / diagnostics:
   doctor, smoke, state
+  rac record-signup        record a manual signup with dummy values
 
 Paths:
   home       ${APP_HOME}

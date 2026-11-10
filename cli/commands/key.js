@@ -26,6 +26,7 @@ Subcommands:
   show [id]           show one key (secrets masked unless --secrets)
   check [id|all]      verify a key against the Admin SDK
   authorize [id]      run the OAuth consent flow and store a refresh token
+                      (use --manual to sign in yourself)
   recover [id]        reset the admin password and mint backup codes
   remove <id|all>     delete a key
   export [id|all]     print or write usable key JSON
@@ -70,6 +71,7 @@ an OAuth client with client_id and client_secret.
   --email <address>   admin email
   --password <value>  admin password
   --totp <secret>     base32 authenticator secret
+  --manual            ignore saved admin credentials; sign in in the browser
   --profile <name>    browser profile (default: setup)
   --headless          run headless
   --channel <name>    Chrome channel (default: chrome)
@@ -215,6 +217,7 @@ async function cmdAuthorize(argv) {
     email: { type: "string" },
     password: { type: "string" },
     totp: { type: "string" },
+    manual: { type: "boolean", default: false },
     profile: { type: "string", default: "setup" },
     headless: { type: "boolean", default: false },
     channel: { type: "string", default: "chrome" },
@@ -233,11 +236,13 @@ async function cmdAuthorize(argv) {
   if (key.kind === "service_account") throw new Error("service accounts do not need consent");
   if (!key.client_id || !key.client_secret) throw new Error("this key has no client_id/client_secret");
 
-  const creds = resolveAdminCreds(state, {
-    email: values.email,
-    password: values.password,
-    otp: values.totp,
-  });
+  const creds = values.manual
+    ? { email: "", password: "", otp: "", codes: [], domain: "", adminUser: "" }
+    : resolveAdminCreds(state, {
+        email: values.email,
+        password: values.password,
+        otp: values.totp,
+      });
   if (creds.email) {
     await mutate((draft) => {
       draft.setup.auto.adminEmail = creds.email;
@@ -262,8 +267,8 @@ async function cmdAuthorize(argv) {
 
     const logged = new WeakSet();
     const credential = await authorizeKeyWithContext(context, key, {
-      creds,
-      email: creds.email,
+      creds: values.manual ? null : creds,
+      email: values.manual ? "" : creds.email,
       timeout: Number(values.timeout) * 1000,
       keepOpen: values["keep-open"],
       onTick: (page) => {

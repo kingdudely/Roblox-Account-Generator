@@ -311,6 +311,12 @@ function scanSignupPage() {
 // MAIN world. Fires the real handler at coordinates while capturing window.open,
 // so the SSO URL is recovered even when the button is not an anchor.
 function activateSignupCta(x, y) {
+  // Chrome passes executeScript args separately; the CLI adapter passes an
+  // array because Playwright's page.evaluate accepts one argument.
+  if (Array.isArray(x)) {
+    y = x[1];
+    x = x[0];
+  }
   const captured = [];
   const originalOpen = window.open;
   window.open = function patchedOpen(url) {
@@ -364,6 +370,9 @@ function activateSignupCta(x, y) {
 // clicking through always moves it. Idempotent — the lane calls this in a loop
 // until the page leaves /not-approved.
 async function uiFinaliseStep(birthday, username, gender, acceptTerms) {
+  if (Array.isArray(birthday)) {
+    [birthday, username, gender, acceptTerms] = birthday;
+  }
   const date = String(birthday || "1996-05-15");
   const [year, month, day] = date.split("-").map((part) => Number(part));
   const MONTHS = [

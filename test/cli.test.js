@@ -168,6 +168,13 @@ test("lane adapter bridges tabs, scripts and cookies", { skip: !findChrome(), ti
     });
     assert.equal(scripted[0].result, "lane");
 
+    const multi = await laneApi.api.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: (args) => (Array.isArray(args) ? args[0] + args[1] : null),
+      args: [2, 3],
+    });
+    assert.equal(multi[0].result, 5);
+
     const sent = await laneApi.api.tabs.sendMessage(tab.id, {
       type: "google-ping",
     });

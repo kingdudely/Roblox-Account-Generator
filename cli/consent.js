@@ -184,7 +184,13 @@ export async function waitForCodeWithBrowser(
           info(`consent: ${hit}`);
         }
       }
-      if (typeof onTick === "function") await onTick(page).catch(() => {});
+      if (typeof onTick === "function") {
+        try {
+          await onTick(page);
+        } catch (_) {
+          // a transient page must not stop the consent loop
+        }
+      }
       await page.waitForTimeout(1000);
     }
   } finally {

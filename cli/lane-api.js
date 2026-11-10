@@ -215,7 +215,11 @@ export async function createLaneApi({
       async executeScript(injection = {}) {
         const tab = await pageFor(injection.target?.tabId);
         const args = Array.isArray(injection.args) ? injection.args : [];
-        const result = await tab.page.evaluate(injection.func, ...args);
+        // Playwright's page.evaluate takes exactly one argument; Chrome's
+        // scripting.executeScript spreads args. Pass an array when there are
+        // several, and let the page function unpack it.
+        const arg = args.length === 0 ? undefined : args.length === 1 ? args[0] : args;
+        const result = await tab.page.evaluate(injection.func, arg);
         return [{ result: result === undefined ? null : result }];
       },
     },

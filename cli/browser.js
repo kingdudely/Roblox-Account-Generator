@@ -35,14 +35,21 @@ function proxyOptions(raw) {
 
 export async function launchContext({
   profile = "setup",
+  userDataDir = "",
   headless = false,
   proxy = "",
   channel = "chrome",
   slowMo = 0,
   args = [],
+  recordVideo = null,
+  recordHar = null,
 } = {}) {
-  const dir = profileDir(profile);
-  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  const dir = userDataDir ? path.resolve(userDataDir) : profileDir(profile);
+  if (userDataDir) {
+    if (!existsSync(dir)) throw new Error(`Chrome profile not found: ${dir}`);
+  } else {
+    await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  }
 
   const options = {
     headless: Boolean(headless),
@@ -55,6 +62,8 @@ export async function launchContext({
   const proxied = proxyOptions(proxy);
   if (proxied) options.proxy = proxied;
   if (args.length) options.args = args;
+  if (recordVideo) options.recordVideo = recordVideo;
+  if (recordHar) options.recordHar = recordHar;
 
   let lastError = null;
   for (let attempt = 0; attempt < 3; attempt += 1) {
