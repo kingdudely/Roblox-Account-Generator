@@ -13,7 +13,7 @@ import {
   showPhoneGate,
 } from "../flow/phone.js";
 import { load, mutate } from "../state.js";
-import { info, ok, oneLine, warn } from "../util.js";
+import { info, ok, oneLine, sleep, warn } from "../util.js";
 
 const SIGNUP = "https://workspace.google.com/gcpidentity/signup?sku=identitybasic";
 
@@ -43,6 +43,7 @@ Options:
   --timeout <seconds>     per-step form timeout (default: 120)
   --manual                only open the signup page; do not fill anything
   --check-form            fill through the admin step, verify, then stop
+  --fast                  instant fill (debug only; default is human-like typing)
   --keep-open             leave the browser open after the tenant is created
   --screenshot <file>     save a screenshot under debug/
   --verbose               print page console output
@@ -59,6 +60,66 @@ export function placeholderEmail(subdomain) {
   return `rac-${name || "tenant"}@example.com`;
 }
 
+let humanInput = true;
+
+function rnd(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+async function humanPause(min = 250, max = 800, fast = humanInput) {
+  if (fast) return;
+  await sleep(rnd(min, max));
+}
+
+async function humanClick(page, locator, { fast = humanInput } = {}) {
+  if (fast) {
+    await locator.click();
+    return;
+  }
+  await locator.scrollIntoViewIfNeeded().catch(() => {});
+  const box = await locator.boundingBox();
+  if (!box) {
+    await locator.click();
+    return;
+  }
+  const x = box.x + box.width * (0.25 + Math.random() * 0.5);
+  const y = box.y + box.height * (0.3 + Math.random() * 0.4);
+  await page.mouse.move(x, y, { steps: rnd(8, 22) });
+  await humanPause(90, 260, fast);
+  await page.mouse.click(x, y);
+  await humanPause(180, 620, fast);
+}
+
+async function humanType(
+  page,
+  locator,
+  text,
+  { fast = humanInput, clear = true } = {}
+) {
+  const value = String(text ?? "");
+  if (fast) {
+    await locator.fill(value);
+    return;
+  }
+  await humanClick(page, locator, { fast });
+  const current = await locator.inputValue().catch(() => "");
+  if (clear && current) {
+    const modifier = process.platform === "darwin" ? "Meta" : "Control";
+    await page.keyboard.press(`${modifier}+A`).catch(() => {});
+    await page.keyboard.press("Backspace").catch(() => {});
+    await humanPause(100, 300, fast);
+  }
+  const chars = [...value];
+  for (let index = 0; index < chars.length; index += 1) {
+    await page.keyboard.type(chars[index]);
+    await sleep(rnd(45, 135));
+    if (index > 0 && index % rnd(5, 9) === 0) {
+      await sleep(rnd(120, 420));
+    }
+  }
+  await humanPause(250, 750, fast);
+}
+
 async function editableInputs(page) {
   return page.locator(
     'input[type="text"]:visible:not([readonly]):not([disabled]), ' +
@@ -72,7 +133,7 @@ async function fillFirst(page, value, index = 0) {
   const inputs = await editableInputs(page);
   const count = await inputs.count();
   if (count <= index) throw new Error(`expected an editable input at position ${index + 1}, found ${count}`);
-  await inputs.nth(index).fill(value);
+  await humanType(page, inputs.nth(index), value);
 }
 
 async function fillByAria(page, patterns, value) {
@@ -81,7 +142,7 @@ async function fillByAria(page, patterns, value) {
       `input[aria-label*="${pattern}" i]:visible:not([readonly]):not([disabled])`
     );
     if (await locator.count()) {
-      await locator.first().fill(value);
+      await humanType(page, locator.first(), value);
       return true;
     }
   }
@@ -90,7 +151,12 @@ async function fillByAria(page, patterns, value) {
 
 // The account step has a readonly username preview before the real field.
 // Prefer the stable IDs from Google's form, then fall back to editable inputs.
-export async function fillAccountStep(page, adminUser, password) {
+export async function fillAccountStep(
+  page,
+  adminUser,
+  password,
+  { fast = humanInput } = {}
+) {
   const username = page
     .locator(
       '#ucc-14:visible, input[autocomplete="off"][maxlength="64"]:visible, input[type="text"]:visible:not([readonly]):not([disabled])'
@@ -103,7 +169,7 @@ export async function fillAccountStep(page, adminUser, password) {
   if (!(await username.count())) {
     throw new Error("could not find the editable username field on the signup account step");
   }
-  await username.fill(adminUser);
+  await humanType(page, username, adminUser, { fast });
   const userValue = await username.inputValue().catch(() => "");
   if (userValue !== adminUser) {
     throw new Error(`username field did not accept the value (got ${JSON.stringify(userValue)})`);
@@ -113,8 +179,8 @@ export async function fillAccountStep(page, adminUser, password) {
   if (count < 2) {
     throw new Error(`expected two editable password fields, found ${count}`);
   }
-  await passwords.nth(0).fill(password);
-  await passwords.nth(1).fill(password);
+  await humanType(page, passwords.nth(0), password, { fast });
+  await humanType(page, passwords.nth(1), password, { fast });
   const firstPassword = await passwords.nth(0).inputValue().catch(() => "");
   const secondPassword = await passwords.nth(1).inputValue().catch(() => "");
   if (firstPassword !== password || secondPassword !== password) {
@@ -127,7 +193,7 @@ async function clickButton(page, names) {
   for (const name of names) {
     const locator = page.getByRole("button", { name: new RegExp(`^${name}$`, "i") });
     if (await locator.count()) {
-      await locator.first().click();
+      await humanClick(page, locator.first());
       return true;
     }
   }
@@ -160,7 +226,7 @@ async function maybeFillPassword(page, password) {
   const field = fields.first();
   const current = await field.inputValue().catch(() => "");
   if (!current) {
-    await field.fill(password).catch(() => {});
+    await humanType(page, field, password).catch(() => {});
     info("admin password filled; continuing");
   }
   await clickButton(page, ["Next", "Sign in", "Continue"]).catch(() => {});
@@ -177,7 +243,7 @@ async function maybeFillPhone(page, phone) {
   if (!(await field.count().catch(() => 0))) return false;
   const current = await field.inputValue().catch(() => "");
   if (current) return false;
-  await field.fill(String(phone).replace(/[^\d+]/g, "")).catch(() => {});
+  await humanType(page, field, String(phone).replace(/[^\d+]/g, "")).catch(() => {});
   await clickButton(page, ["send", "send code", "next", "verify"]).catch(() => {});
   info("phone number filled; waiting for Google");
   return true;
@@ -247,6 +313,7 @@ export async function run(argv) {
       timeout: { type: "string", default: "120" },
       manual: { type: "boolean", default: false },
       "check-form": { type: "boolean", default: false },
+      fast: { type: "boolean", default: false },
       "keep-open": { type: "boolean", default: false },
       screenshot: { type: "string" },
       verbose: { type: "boolean", default: false },
@@ -254,6 +321,7 @@ export async function run(argv) {
     },
   });
 
+  humanInput = !values.fast;
   const state = await load();
   const saved = state.setup?.auto || {};
   const subdomain = cleanSubdomain(
@@ -326,6 +394,10 @@ export async function run(argv) {
     page = await openPage(context, SIGNUP);
     page.setDefaultTimeout(30_000);
     await page.waitForTimeout(2500);
+    if (humanInput) {
+      await page.mouse.move(rnd(250, 900), rnd(180, 520), { steps: rnd(10, 22) });
+      await humanPause(700, 1600);
+    }
 
     if (values.manual) {
       console.log("signup page is open — press Ctrl+C to close");
@@ -342,6 +414,7 @@ export async function run(argv) {
       timeout,
       label: "business-name step",
     });
+    await humanPause(700, 1600);
     await fillByAria(page, ["Business name"], business).catch(() => {});
     if (!(await page.locator("#ucc-0").inputValue().catch(() => ""))) {
       await fillFirst(page, business, 0).catch(() => {});
@@ -354,9 +427,15 @@ export async function run(argv) {
       "300+": "#c5",
     };
     const radio = employeeMap[String(values.employees).toLowerCase()] || "#c1";
-    await page.locator(radio).check().catch(() => {});
+    const radioLocator = page.locator(radio);
+    if (await radioLocator.count()) {
+      await humanClick(page, radioLocator.first()).catch(async () => {
+        await radioLocator.first().check().catch(() => {});
+      });
+    }
     await clickButton(page, ["Next"]);
     await waitPath(page, /\/signup\/contact/, timeout);
+    await humanPause(800, 1800);
 
     // Step 2: contact name + current email.
     await fillFirst(page, first, 0);
@@ -368,6 +447,7 @@ export async function run(argv) {
     }
     await clickButton(page, ["Next"]);
     await waitPath(page, /\/signup\/bring(?!confirm)/, timeout);
+    await humanPause(700, 1600);
 
     // Step 3: domain.
     await fillByAria(page, ["domain"], domain).catch(() => {});
@@ -376,10 +456,12 @@ export async function run(argv) {
     }
     await clickButton(page, ["Next"]);
     await waitPath(page, /\/signup\/bringconfirm/, timeout);
+    await humanPause(600, 1400);
 
     // Step 4: confirm the domain.
     await clickButton(page, ["Next"]);
     await waitPath(page, /\/signup\/account/, timeout);
+    await humanPause(1200, 2600);
 
     // Step 5: admin username + password + agreement.
     await fillAccountStep(page, adminUser, password);
@@ -398,6 +480,7 @@ export async function run(argv) {
     }
 
     if (values.phone) await maybeFillPhone(page, values.phone);
+    await humanPause(1200, 2600);
     const agreed = await clickButton(page, ["Agree and continue"]);
     if (!agreed) warn("could not find the Agree and continue button");
 

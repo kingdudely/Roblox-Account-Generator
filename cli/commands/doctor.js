@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import { launchContext, findChrome } from "../browser.js";
 import { APP_HOME, PROFILE_ROOT, STATE_PATH, profileDir } from "../paths.js";
-import { color, info, ok } from "../util.js";
+import { color, info, ok, warn } from "../util.js";
 import { parseArgs } from "node:util";
 
 const require = createRequire(import.meta.url);
@@ -21,6 +21,7 @@ Checks the runtime and launches a real Chrome window long enough to verify:
   - Patchright is installed and can start Chrome
   - navigator.webdriver is false
   - a mouse click produces isTrusted: true
+  - the public egress IP/org (Google rejects signups from many VPNs)
 
 Options:
   --profile <name>    browser profile (default: setup)
@@ -31,6 +32,19 @@ Options:
 `;
 
 export const summary = "check Node, Patchright, Chrome, profiles and trusted input";
+
+async function publicEgress() {
+  try {
+    const response = await fetch("https://ipinfo.io/json", {
+      signal: AbortSignal.timeout(6000),
+    });
+    if (!response.ok) return `unavailable (HTTP ${response.status})`;
+    const data = await response.json();
+    return [data.ip, data.org, data.city, data.country].filter(Boolean).join(" · ");
+  } catch (error) {
+    return `unavailable (${error.message || error})`;
+  }
+}
 
 export async function run(argv) {
   if (argv.includes("--help") || argv.includes("-h")) {
@@ -58,6 +72,11 @@ export async function run(argv) {
   console.log(`${color.dim("profile")}     ${profileDir(values.profile)}`);
   console.log(`${color.dim("display")}     ${process.env.DISPLAY || "(none)"}`);
   console.log(`${color.dim("headless")}    ${values.headless}`);
+  const egress = await publicEgress();
+  console.log(`${color.dim("egress")}      ${egress}`);
+  if (/cloudflare|vpn|proxy|amazon|aws|azure|google|digitalocean|ovh|hetzner|linode/i.test(egress)) {
+    warn("this egress looks like a VPN/proxy/datacenter; Google signup often rejects those");
+  }
 
   info("launching a smoke browser…");
   const context = await launchContext({

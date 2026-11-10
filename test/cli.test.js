@@ -135,7 +135,7 @@ test(
         <input id="ucc-15" type="password">
         <input id="ucc-16" type="password">
       `);
-      const result = await fillAccountStep(page, "admin", "Sup3r-secret");
+      const result = await fillAccountStep(page, "admin", "Sup3r-secret", { fast: true });
       assert.equal(result.username, "admin");
       assert.equal(await page.locator("#ucc-14").inputValue(), "admin");
       assert.equal(await page.locator("#ucc-15").inputValue(), "Sup3r-secret");
