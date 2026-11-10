@@ -1,343 +1,181 @@
 # Roblox Alt Creator
 
-A local Node.js CLI that turns Cloud Identity keys into Roblox accounts. It runs
-real Chrome through [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright),
-reuses the extension's JavaScript core and content scripts, and keeps state in a
-local JSON file.
-
-The CLI can:
-
-- sign in to the Admin console with a saved admin password and authenticator
-  secret, or leave the password to you;
-- sign in to DuckDNS with the tenant admin Google account, add the subdomain and
-  capture the token;
-- prefill the Cloud Identity signup through the account step, then stop at
-  Google's phone/captcha gate;
-- verify the domain, activate Cloud Identity Free, enrol the admin authenticator,
-  set the tenant 2SV policy, create the Cloud project, enable the Admin SDK, set
-  up the consent screen, add the five scopes, create the desktop OAuth client and
-  authorize the key;
-- import/check/recover keys and create Google identities with the Admin SDK;
-- run Roblox Google-SSO lanes in separate persistent Chrome profiles, including
-  the Google prime, authenticator capture, cookie capture and Roblox finalise.
-
-The Workspace tenant signup and the phone/captcha gate remain external. The CLI
-does not bypass them. Everything after the gate can be automatic.
-
-## Node CLI
+One command turns a fresh DuckDNS name into a Google Cloud Identity tenant, an
+authorized OAuth key and Roblox account(s).
 
 ```bash
 npm install
-node bin/rac.js doctor
-node bin/rac.js smoke --headless
-node bin/rac.js help
+npm run create-tenant
 ```
 
-`npm link` is optional; it makes `rac` available as a command:
+That is the whole pipeline. The browser opens only when Google needs you, and
+the CLI resumes automatically when the page moves on.
 
-```bash
-npm link
-rac doctor
-```
+## What `rac start` does
 
-Patchright drives the system Chrome by default (`--channel chrome`). If Chrome
-is not installed, run `npx patchright install chromium` and pass
-`--channel none`.
+1. **Picks a DuckDNS subdomain.** It generates a hard-to-collide name and checks
+   DNS first. If you pass a name that already resolves, it picks another one
+   unless you own it with a saved token.
+2. **Creates the Cloud Identity tenant.** The domain does **not** need to exist
+   yet. It signs up `admin@<sub>.duckdns.org` and fills the form through the
+   account step.
+3. **Stops for Google's phone/QR gate.** This is the one unavoidable human step.
+   The CLI focuses the browser, beeps, shows what Google wants, and auto-resumes
+   when verification finishes.
+4. **Creates the DuckDNS record with the tenant admin.** The new admin account is
+   a real Google account, so it is used to sign in to DuckDNS, add the subdomain
+   and capture the token. No personal Google account is needed.
+5. **Verifies the domain.** It writes the TXT record through the DuckDNS API,
+   waits for DNS, and lets the Admin console verify ownership.
+6. **Finishes the tenant and key.** Cloud Identity Free, admin 2SV and policy,
+   Cloud project, Admin SDK, consent screen, five scopes, desktop OAuth client,
+   and the consent flow that stores the refresh token.
+7. **Creates Roblox account(s).** Google identities are created with the Admin
+   SDK, the Roblox Google-SSO lane runs in a persistent profile, the cookie and
+   account details are saved, the Google identity is deleted to free the seat,
+   and everything is exported.
 
-### Commands
+## What still needs you
+
+| Step | When | What to do |
+|---|---|---|
+| Recovery email | once, first run | Pass `--contact you@example.com` or answer the prompt. It must be outside the tenant domain. |
+| Google phone/QR check | once per tenant | Scan the QR code with your phone, or send the SMS the CLI extracts. |
+| Captcha / extra 2SV | occasionally | The browser is focused and the terminal beeps. Solve it there; the run resumes. |
+| Roblox captcha | occasionally | Same handoff: the lane tab is focused and the run waits. |
+
+There is no public API to create a Cloud Identity tenant. The only programmatic
+path is the Cloud Channel API, which requires Google partner/reseller status and
+paid subscriptions. Phone verification is Google's anti-abuse check; virtual
+numbers/SMS-activation services violate Google's terms and get tenants
+suspended. The CLI does not bypass it. It makes the check as small as possible
+and automates everything around it.
+
+Once a tenant exists, Cloud Identity Free provides 50 seats. `rac run` deletes
+the Google identity after a successful Roblox signup, freeing the seat, so the
+same tenant can keep producing accounts subject to Google/Roblox rate limits.
+
+## The two phone gates
+
+Google uses two opposite directions. The CLI handles both.
+
+| What Google says | Direction | What the CLI does |
+|---|---|---|
+| "We'll send you a verification code" | Google → you | Fills **your** number (`--phone` / `RAC_PHONE`), then focuses the browser so you can enter the code. |
+| "Send this text to Google" | you → Google | Scans the page/QR, extracts Google's number and the message body, prints them, focuses the browser and beeps. |
+
+`--phone` is therefore **your** number, not Google's. The number Google asks you
+to text is shown by the gate handler. If the QR page appears, you can simply
+scan it with your phone; the CLI also tries to read the consent link and show
+the destination number/message so you can send it directly. See
+[docs/PHONE.md](docs/PHONE.md) for the full explanation and failure cases.
+
+## Commands
 
 | Command | What it does |
 |---|---|
-| `rac doctor` | checks Node, Patchright, Chrome and trusted input |
-| `rac smoke` | verifies `navigator.webdriver: false` and a trusted click |
-| `rac admin` | opens or signs in to the Admin console |
-| `rac duckdns` | signs in with Google, adds a subdomain and captures the token |
-| `rac signup` | prefills the Cloud Identity signup and stops at the phone gate |
-| `rac setup` | runs the automatic tenant/key sub-steps |
-| `rac key …` | import, list, check, authorize, recover, remove, export |
-| `rac identity …` | create/list/delete identities, check 2SV, mint codes |
-| `rac run` | create identities and run Roblox Google-SSO lanes |
-| `rac export` | write the captured accounts to `accounts.txt` |
-| `rac state` | show the state path and a summary |
+| `rac start` / `npm run create-tenant` | Full pipeline: domain → tenant → DuckDNS → verify → key → 1 account |
+| `rac start --tenant-only` | Stop after the OAuth key is ready |
+| `rac start --accounts 5` | Create five Roblox accounts after setup |
+| `rac status` | Checklist and the next command |
+| `rac run --count 5` | Create more accounts with the ready key |
+| `rac export` | Write `accounts.txt` |
+| `rac key …` | Import, list, check, authorize, recover, remove, export keys |
+| `rac identity …` | Create/list/delete Google identities, check 2SV, mint codes |
+| `rac signup` | Just the Google signup form and phone/QR gate |
+| `rac duckdns` | Just the DuckDNS record and token |
+| `rac setup` | Just the tenant/key sub-steps |
+| `rac admin` | Open or sign in to the Admin console |
+| `rac doctor` / `rac smoke` | Check Patchright, Chrome and trusted input |
+| `rac state` | Show paths and a raw summary |
 
-### Typical flow
+`rac` with no arguments prints the status dashboard. `rac help` prints the
+grouped command list.
 
-```bash
-# 1. One-time tenant signup. Finish the phone/captcha gate in the window.
-node bin/rac.js signup --subdomain mytenant --contact you@example.com
+### Common options
 
-# 2. Create the DuckDNS subdomain and capture its token.
-node bin/rac.js duckdns --subdomain mytenant --email admin@mytenant.duckdns.org
+- `--subdomain <name>` — use a specific DuckDNS name instead of a generated one.
+- `--token <token>` — reuse an existing DuckDNS account token.
+- `--contact <email>` — recovery email; saved after the first run.
+- `--password <value>` — admin password; generated and saved by default.
+- `--phone <number>` — your number for the "Google texts you" gate.
+- `--from <step>` — force `signup`, `duckdns`, `setup` or `accounts`.
+- `--dry-run` — print the plan without opening a browser.
+- `--yes` — use saved values without prompting.
+- `--proxy <url>` — proxy every browser step.
+- `--headless` — fine for `rac run`; not for the first-time phone/QR gate.
 
-# 3. Finish the tenant and build/authorize the OAuth key.
-#    Add --totp <base32 secret> if the admin already has 2SV.
-node bin/rac.js setup --subdomain mytenant \
-  --admin-email admin@mytenant.duckdns.org \
-  --admin-password '<admin password>'
-
-# 4. Run a Roblox account.
-node bin/rac.js run --count 1
-
-# 5. Export.
-node bin/rac.js export
-```
-
-If you already have a key:
-
-```bash
-node bin/rac.js key import client_secret_*.json
-node bin/rac.js key authorize
-node bin/rac.js run --count 1
-```
-
-`rac run` deletes the Google identity after a successful Roblox signup by
-default, which frees the Cloud Identity seat. Pass `--keep-google` if you want
-to keep Google sign-in for that account.
-
-State lives outside the repo:
+## State and profiles
 
 ```
 ~/.local/share/roblox-alt-creator/state.json
-~/.local/share/roblox-alt-creator/profiles/<name>
+~/.local/share/roblox-alt-creator/profiles/setup
+~/.local/share/roblox-alt-creator/profiles/lane-1 … lane-N
 ```
 
-Override the root with `RAC_HOME=/path/to/dir`. `state.json` is written with
-mode `0600`. The CLI never writes credentials into the repository.
+Override the root with `RAC_HOME=/path/to/dir`. The state file is written with
+mode `0600` and contains the admin password, TOTP secret and keys. Back it up.
 
-Admin credentials can also come from the environment instead of the command
-line: `RAC_ADMIN_EMAIL`, `RAC_ADMIN_PASSWORD`, `RAC_TOTP`.
+The `setup` profile is shared by signup, DuckDNS and setup, so the Google session
+survives between steps. Lane profiles are separate cookie jars for Roblox runs.
+Chrome may close and reopen between setup steps; the login survives in the
+profile.
 
-### Profiles
+## Troubleshooting
 
-- `setup` is the default profile for `admin`, `duckdns`, `signup` and `setup`.
-- `lane-1` … `lane-N` are the Roblox lane profiles used by `rac run`.
-- Profiles are persistent, so a Google login or DuckDNS login survives a re-run.
-- `--proxy` is supported on the browser commands; `rac run` cycles
-  `settings.proxyUrl` / `settings.proxyList` across lanes.
+**"Sorry, we can't complete your signup"** — Google's anti-abuse decision, not a
+CLI bug. Wait, try a different network/phone, or use a proxy. There is no
+reliable bypass.
 
-### Safety boundaries
+**"This phone number cannot be used for verification"** — the number has been
+used too many times or the attempt limit was hit. Wait, or use a trusted
+different number.
 
-- No anti-detection guarantee. Patchright hides common automation leaks and
-  produces trusted input, but Google's signup decision is driven by reputation,
-  IP/ASN, phone and behavioural signals as well.
-- The phone/captcha gate is left to a human. `rac signup` fills the form and
-  submits the account step; it does not solve or bypass verification.
-- If the admin already has 2SV but no saved authenticator secret, `rac setup`
-  refuses to change the tenant policy. A phone-only admin would be locked out.
+**The admin already has 2SV but no saved authenticator** — `rac setup` refuses to
+change the tenant policy, because a phone-only admin could be locked out. Set the
+policy manually only if another allowed factor exists.
 
-## Firefox extension (optional)
+**The phone/QR gate sits there** — the browser is focused; scan the QR or send
+the printed SMS. The CLI re-beeps every minute and continues when the page
+moves on.
 
-The extension is still in the tree as a GUI and a Firefox-containers lane runner.
-For the CLI, skip to the commands above. Firefox containers give each lane its
-own cookie jar, so several sign-ins run in one window. The extension's automatic
-setup also opens its worker tab in a dedicated **RAC setup** container, so the
-admin/console/consent session is isolated from normal browsing.
+**A Roblox lane needs a captcha** — the lane tab is focused and the run waits.
+Finish it there. If the lane times out, rerun with `--keep-open`.
 
-```
-about:debugging#/runtime/this-firefox
-  → Load Temporary Add-on…
-  → pick extension/manifest.json
-```
+## Advanced
 
-Temporary add-ons disappear when Firefox closes. For a permanent install, zip the
-`extension/` folder and sign it:
+Use an existing key:
 
 ```bash
-npx web-ext sign --source-dir extension --artifacts-dir dist
+rac key import client_secret_*.json
+rac key authorize
+rac run --count 5
 ```
 
-Stable Firefox will not load an unsigned extension permanently.
-
-### Chrome extension build
-
-Chrome has one cookie jar per profile, so it runs one lane. Build the Chrome
-manifest into a separate folder:
+Resume after a human step:
 
 ```bash
-rm -rf dist/chrome
-cp -r extension dist/chrome
-cp dist/chrome/manifest.chrome.json dist/chrome/manifest.json
+npm run create-tenant
 ```
 
-```
-chrome://extensions → Developer mode → Load unpacked → dist/chrome
-```
-
-Running several Chrome lanes means one Chrome profile per lane; it is not a
-container replacement.
-
-## Legacy Python Patchright companion
-
-The Node CLI above supersedes this. `tools/rac_cli.py` remains as a small
-diagnostic runner for screenshots, console logging and trusted-input checks.
+Everything already checked is skipped. To force a step:
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -r tools/requirements-cli.txt
-
-.venv/bin/python tools/rac_cli.py doctor
-.venv/bin/python tools/rac_cli.py smoke --headless
-.venv/bin/python tools/rac_cli.py admin
-.venv/bin/python tools/rac_cli.py duckdns
-.venv/bin/python tools/rac_cli.py signup
-.venv/bin/python tools/rac_cli.py open https://example.com --wait 5 --screenshot example.png
+rac start --from setup
 ```
 
-- Headful is the default for `admin`, `duckdns`, `signup` and `open`. `smoke`
-  and `doctor` default to headless.
-- `--log-console` prints page console output and page errors.
-- `--screenshot` writes to `debug/` unless an absolute path is given.
-- The persistent profile defaults to
-  `~/.local/share/roblox-alt-creator/patchright-profile`, outside the repo.
-- `--proxy`, `--proxy-user` and `--proxy-pass` are supported.
+## Optional Firefox extension
 
-The CLI does not bypass Google’s phone/captcha or anti-abuse checks. It pauses
-there and leaves the page open for a human. It is a companion to the extension,
-not an anti-detection guarantee.
-
-## Extension first run
-
-The runner opens on install. If it does not, click the toolbar icon and choose
-**Open runner**.
-
-This section describes the extension only. CLI users should use the commands
-above.
-
-1. **Keys** — drop the `client_secret_*.apps.googleusercontent.com.json` you
-   downloaded from the Cloud console, then press **Authorize** on the tenant row
-   and approve the consent tab as the tenant admin. A ready-made key with
-   `client_id`, `client_secret` and `refresh_token` can be pasted instead. The
-   domain is detected from the tenant, so there is no domain field.
-2. **Setup** — the buy hint sits at the top; the five manual steps are always
-   visible.
-   - **Step 1 — DuckDNS.** Create the subdomain and copy the account token. Save
-     both here. The same pair is used by step 2 and by the automatic branch.
-   - **Step 2 — Cloud Identity tenant.** Create the tenant, verify the domain and
-     create the admin account manually. The Phone gate card can decode the admin
-     signup QR and read the SMS number/message.
-   - **Sub-step checklist.** Every sub-step has a checkbox. Tick the ones you
-     have already done. Ticking a later sub-step checks everything before it;
-     unticking one clears everything after it. The setup bar counts sub-steps,
-     so it moves on every tick. Automatable sub-steps also have an **Auto**
-     button that runs only that one task; **Automate remaining** runs every
-     unchecked automatable sub-step in order. The **Keys** tab has a
-     **Create a key in Setup** button that opens this step.
-   - **Automate remaining** opens one new tab at `admin.google.com` in the
-     `RAC setup` container (Chrome: the current profile). Sign in there as the
-     tenant admin; the extension takes over when it lands in the Admin console.
-     It never asks for, stores or types the admin password.
-   - The automatic tasks check the domain (and write the DuckDNS TXT record if
-     Google shows one), activate Cloud Identity Free if it is missing, enrol the
-     admin authenticator, set the tenant 2SV policy and build/authorize the key.
-     Each finished task ticks its own checkbox. If a page or a login challenge
-     needs a human, it waits in the worker tab; the run resumes when the page
-     moves on. Use **Stop** to go back to manual.
-   - Tasks with prerequisites have their Auto button disabled until the earlier
-     sub-step is ticked. The five OAuth scopes are attempted automatically: the
-     Auto task filters the scope picker and ticks each scope. If the picker
-     differs, add the scopes manually and tick the sub-step; the remaining key
-     tasks stay gated on it, so a key cannot silently miss the audit/policy
-     scopes.
-   - Step 5 also has Auto buttons for **Check the key**, **Run one identity**
-     and **Export accounts**. Those run locally and are not part of
-     **Automate remaining**.
-   - **Already-enrolled admin safety.** If the admin already has 2SV but the
-     extension has no authenticator secret for it, it does not change the tenant
-     policy. A phone-only admin would be locked out. It marks the authenticator
-     sub-step done, leaves the policy sub-step manual and continues to the key;
-     set the policy manually only if another allowed factor exists.
-   - The key row has **Admin** / **Recover admin** (show or reset the tenant admin
-     password and mint fresh backup codes using the key) and **JSON** (download the
-     key so it is backed up outside extension storage).
-   - Set tenant 2SV **Enforcement** to **On** with **Methods** = *Any except
-     verification codes via text, phone call*: enforcement off makes Google ask
-     for a phone number on every fresh account, and a method list that allows
-     nothing enroll-able produces *"Your sign-in settings don't meet your
-     organization's 2-Step Verification policy"*.
-3. **Run** — choose a count, press Start. Each identity gets ten minted backup
-   codes; they land on the account row (`codes 10`) and in the export as
-   `backup_codes:`. The run accepts the new-account terms interstitial, enrols the
-   authenticator app (secret saved as `otp_secret`), then finalises the Roblox
-   account by driving `www.roblox.com/not-approved` itself: I Agree, username,
-   birthday, Continue — and only closes the tab once the URL is `/home`. If the
-   page freezes, it reloads and retries a few times. After a successful signup it
-   also checks the identity's Google 2SV status and warns if enrolment did not
-   finish.
-4. **Settings** — choose whether Roblox keeps its generated username or the run
-   sends one from the local generator, set the birthday and gender written at
-   finalise (tick **random** under either to roll a fresh value per identity),
-   turn the automatic terms acceptance on or off, and tune identity concurrency.
-   Two more knobs live there: **lane surface** (a background tab by default —
-   a `world: "MAIN"` shim supplies the frame clock, so no window appears; switch
-   to *own window* only if a page manages to stall it) and **deletion pacing**,
-   which walks a small batch of users a minute apart instead of a burst.
-   **2-Step Verification** has no switch: every lane mints backup codes before it
-   opens, and asks for a set mid-challenge if Google wants one the runner does
-   not hold, because an identity with neither codes nor an authenticator has no
-   second factor and is refused outright. It also offers the `moderated`
-   re-auth retry; **Egress** takes
-   one SOCKS5 per lane, cycling through a list, with each lane logging the exit
-   IP it actually got.
-
-Accounts are written to extension storage the moment the cookie lands. Export is
-a mirror; closing the tab loses nothing.
-
-## Layout
-
-```
-bin/rac.js               CLI entry point
-cli/
-  main.js                command dispatch
-  browser.js             Patchright launch, logging, screenshots
-  content-bridge.js      injects content/google.js + content/setup.js
-  lane-api.js            Playwright adapter for extension/lib/lane.js
-  consent.js             OAuth consent flow and code exchange
-  google.js              Google sign-in driver
-  key-flow.js            key import/check/recover helpers
-  state.js               atomic JSON state store
-  commands/              doctor, smoke, admin, duckdns, signup, setup,
-                         key, identity, run, export, state
-extension/
-  manifest.json          Firefox MV3 (containers, background scripts)
-  manifest.chrome.json   Chrome MV3 (service worker, one lane)
-  runner.html/.css/.js   the run loop and the whole extension UI
-  background.js          opens the runner, owns the log ring
-  content/google.js      fills Google's sign-in pages and the 2SV wizard
-  content/setup.js       finishes the tenant: Admin console + Cloud console
-  content/awake.js       main-world shim: frame clock + visibility for hidden lanes
-  lib/                   admin, lanes, keys, consent, QR, storage
-tools/
-  rac_cli.py             legacy Python Patchright diagnostic runner
-  requirements-cli.txt   patchright (Python)
-  e2e.py                 older Firefox lane harness
-package.json             Node CLI dependencies and bin entry
-```
-
-The Python pipeline that preceded the extension is not part of this tree; it
-remains in the Git history. The Node CLI reuses `extension/lib` and
-`extension/content` directly.
+The extension remains in `extension/` for Firefox-container lanes and a GUI. The
+CLI is the primary surface and reuses the same `extension/lib` and
+`extension/content` code. See [docs/LEGACY.md](docs/LEGACY.md) for the extension
+and legacy Python notes; the CLI commands in that file are outdated.
 
 ## Testing
 
-Automated checks:
-
 ```bash
 npm test
-```
-
-CLI smoke checks:
-
-```bash
 node bin/rac.js doctor --headless
 node bin/rac.js smoke --headless
-node bin/rac.js setup --dry-run --subdomain test --token 00000000-0000-0000-0000-000000000000
+node bin/rac.js start --dry-run --contact you@example.com
 ```
-
-The full CLI integration was exercised against real Chrome: Roblox SSO opened
-Google, the injected content script filled the identifier, and the lane timed out
-at the expected rejected-account screen. Setup and consent paths require a real
-tenant to exercise end to end.
-
-The extension is tested by loading it in Firefox (or the Chrome build) and
-running the same checklist. `tools/e2e.py` is the older Firefox harness; it is
-legacy but still useful for the extension lane path.

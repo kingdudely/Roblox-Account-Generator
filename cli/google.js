@@ -1,5 +1,7 @@
 import { dispatchMessage, sendGoogleFill } from "./content-bridge.js";
 import { hostOf, saveDebug } from "./browser.js";
+import { actionNeeded } from "./flow/human.js";
+import { showPhoneGate } from "./flow/phone.js";
 import { info, warn } from "./util.js";
 
 export function isGoogleHost(url) {
@@ -104,6 +106,26 @@ export async function driveGoogle(
   const deadline = Date.now() + timeout;
   let lastUrl = "";
   let passwordNotice = false;
+  let stuckSince = Date.now();
+  let lastNotice = "";
+  const humanSeen = new Set();
+
+  async function challenge() {
+    return page
+      .evaluate(() => {
+        const text = document.body ? document.body.innerText || "" : "";
+        if (/captcha|type the text you hear or see|not a robot/i.test(text)) return "captcha";
+        if (/enter (the )?code|verification code|check your phone|we sent a code/i.test(text)) {
+          return "code";
+        }
+        if (/2-step verification|verify it.s you|confirm it.s you|try another way/i.test(text)) {
+          return "verification";
+        }
+        if (document.querySelector('input[type="password"]')) return "password";
+        return "";
+      })
+      .catch(() => "");
+  }
 
   while (Date.now() < deadline) {
     let done = false;
@@ -123,6 +145,8 @@ export async function driveGoogle(
     }
     if (url !== lastUrl) {
       lastUrl = url;
+      stuckSince = Date.now();
+      lastNotice = "";
       info(`${label}: ${url.slice(0, 160)}`);
     }
 
@@ -130,6 +154,36 @@ export async function driveGoogle(
       if (!creds.password && !passwordNotice) {
         passwordNotice = true;
         warn("no admin password saved — type it in the browser window; the CLI resumes after it");
+      }
+      const issue = await challenge();
+      if (issue && Date.now() - stuckSince > 12_000 && lastNotice !== issue) {
+        lastNotice = issue;
+        const copy = {
+          password: ["Google wants the admin password", "Type it in the focused browser window."],
+          code: ["Enter the code Google sent you", "Check the phone and type the code in the focused browser window."],
+          verification: ["Google wants extra verification", "Finish it in the focused browser window; I'll continue after it."],
+          captcha: ["Solve the captcha", "Solve it in the focused browser window; I'll continue after it."],
+        };
+        if (issue === "verification") {
+          await showPhoneGate(page, page.context(), { seen: humanSeen }).catch(() => {});
+        } else {
+          await actionNeeded(page, { title: copy[issue][0], lines: [copy[issue][1]] });
+        }
+        stuckSince = Date.now();
+      } else if (
+        !issue &&
+        Date.now() - stuckSince > 20_000 &&
+        lastNotice !== "stuck"
+      ) {
+        lastNotice = "stuck";
+        await actionNeeded(page, {
+          title: "Finish the Google sign-in",
+          lines: [
+            "The page is waiting for you in the focused browser window.",
+            "Pick the admin account or finish the prompt; I'll continue after it.",
+          ],
+        });
+        stuckSince = Date.now();
       }
       await fillGooglePage(page, creds).catch(() => {});
     }

@@ -20,24 +20,25 @@ export const color = {
   cyan: (text) => paint("36", text),
 };
 
-function stamp() {
-  return new Date().toTimeString().slice(0, 8);
-}
-
 export function info(text) {
-  console.log(`${color.dim(stamp())} ${text}`);
+  console.log(`${color.dim("·")} ${text}`);
 }
 export function step(text) {
-  console.log(`${color.dim(stamp())} ${color.cyan(">")} ${text}`);
+  console.log(`${color.cyan("→")} ${text}`);
 }
 export function ok(text) {
-  console.log(`${color.dim(stamp())} ${color.green("ok")} ${text}`);
+  console.log(`${color.green("✓")} ${text}`);
 }
 export function warn(text) {
-  console.error(`${color.dim(stamp())} ${color.yellow("warn")} ${text}`);
+  console.error(`${color.yellow("!")} ${text}`);
 }
 export function error(text) {
-  console.error(`${color.dim(stamp())} ${color.red("error")} ${text}`);
+  console.error(`${color.red("✗")} ${text}`);
+}
+
+export function phase(index, total, label) {
+  console.log("");
+  console.log(`${color.bold(`[${index}/${total}]`)} ${label}`);
 }
 
 export function sleep(ms) {

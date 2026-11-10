@@ -56,10 +56,23 @@ export async function launchContext({
   if (proxied) options.proxy = proxied;
   if (args.length) options.args = args;
 
-  const context = await chromium.launchPersistentContext(dir, options);
-  context.setDefaultTimeout(30_000);
-  context.setDefaultNavigationTimeout(60_000);
-  return context;
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const context = await chromium.launchPersistentContext(dir, options);
+      context.setDefaultTimeout(30_000);
+      context.setDefaultNavigationTimeout(60_000);
+      return context;
+    } catch (error) {
+      lastError = error;
+      const locked = /ProcessSingleton|profile.*(?:lock|use)|already in use|Target page, context or browser has been closed/i.test(
+        String(error.message || error)
+      );
+      if (!locked || attempt === 2) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+  }
+  throw lastError;
 }
 
 export async function firstPage(context) {

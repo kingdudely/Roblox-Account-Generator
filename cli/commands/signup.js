@@ -1,62 +1,54 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
-import { hostOf, launchContext, openPage, saveDebug, waitUntil } from "../browser.js";
+import { hostOf, launchContext, openPage, saveDebug, stayOpen, waitUntil } from "../browser.js";
 import { DEBUG_ROOT } from "../paths.js";
 import { makeAdminPassword } from "../../extension/lib/names.js";
+import { actionNeeded } from "../flow/human.js";
+import { cleanDomain, cleanSubdomain } from "../flow/domain.js";
+import {
+  classifyPhoneText,
+  hasVisibleCodeInput,
+  hasVisiblePhoneInput,
+  showPhoneGate,
+} from "../flow/phone.js";
 import { load, mutate } from "../state.js";
-import { info, ok, warn } from "../util.js";
+import { info, ok, oneLine, warn } from "../util.js";
 
 const SIGNUP = "https://workspace.google.com/gcpidentity/signup?sku=identitybasic";
 
 const HELP = `rac signup [options]
 
-Prefills the Cloud Identity signup form and submits the account step. It stops
-at Google's phone/captcha gate and leaves the browser open so you can finish the
-verification. It does not bypass that gate.
+Fills the Cloud Identity signup form and drives the phone/QR gate. The tenant
+domain does not need to exist yet; DuckDNS is created afterwards with the new
+tenant admin account.
 
 Options:
-  --business <name>    business name (default: from the DuckDNS subdomain)
-  --first <name>       contact first name
-  --last <name>        contact last name
-  --contact <email>    current/recovery email
-  --domain <domain>    domain to register (default: <subdomain>.duckdns.org)
-  --subdomain <name>   DuckDNS subdomain shortcut
-  --admin <username>   admin username local-part (default: admin)
-  --password <value>   admin password (default: generated and saved)
-  --phone <number>     prefill the phone number at the gate, if a field appears
-  --employees <n>      "just-you", "2-9", "10-99", "100-299" or "300+"
-  --profile <name>     browser profile (default: setup)
-  --headless           run headless (the phone gate needs a visible browser)
-  --channel <name>     Chrome channel (default: chrome)
-  --proxy <url>        proxy
-  --timeout <seconds>  per-step timeout (default: 120)
-  --manual             only open the signup page; do not fill anything
-  --keep-open          leave the browser open after the gate (default: true
-                       when the gate is reached)
-  --screenshot <file>  save a screenshot under debug/
-  --verbose            print page console output
-  --help               show this help
+  --business <name>       business name (default: from the DuckDNS subdomain)
+  --first <name>          contact first name
+  --last <name>           contact last name
+  --contact <email>       current/recovery email
+  --domain <domain>       domain to register (default: <subdomain>.duckdns.org)
+  --subdomain <name>      DuckDNS subdomain shortcut
+  --admin <username>      admin username local-part (default: admin)
+  --password <value>      admin password (default: generated and saved)
+  --phone <number>        YOUR number, only for the gate that texts you a code
+                          (not the number Google asks you to text)
+  --employees <n>         "just-you", "2-9", "10-99", "100-299" or "300+"
+  --gate-timeout <s>      how long to wait at the phone/QR gate (default: 1800)
+  --profile <name>        browser profile (default: setup)
+  --headless              run headless (the phone gate needs a visible browser)
+  --channel <name>       Chrome channel (default: chrome)
+  --proxy <url>           proxy
+  --timeout <seconds>     per-step form timeout (default: 120)
+  --manual                only open the signup page; do not fill anything
+  --keep-open             leave the browser open after the tenant is created
+  --screenshot <file>     save a screenshot under debug/
+  --verbose               print page console output
+  --help                  show this help
 `;
 
-export const summary = "prefill the Cloud Identity signup and stop at the phone gate";
-
-function cleanDomain(value) {
-  const text = String(value || "")
-    .trim()
-    .toLowerCase()
-    .replace(/^https?:\/\//, "")
-    .replace(/\/.*$/, "");
-  return /^[a-z0-9.-]+\.[a-z]{2,}$/.test(text) ? text : "";
-}
-
-function cleanSubdomain(value) {
-  return String(value || "")
-    .trim()
-    .toLowerCase()
-    .replace(/\.duckdns\.org$/, "")
-    .replace(/[^a-z0-9-]/g, "");
-}
+export const summary = "fill the Cloud Identity signup and drive the phone/QR gate";
 
 async function visibleInputs(page) {
   return page.locator(
@@ -94,30 +86,82 @@ async function clickButton(page, names) {
 }
 
 async function waitPath(page, pattern, timeout = 120_000) {
-  await page.waitForURL(
-    (url) => pattern.test(url.pathname),
-    { timeout, waitUntil: "domcontentloaded" }
-  );
+  await page.waitForURL((url) => pattern.test(url.pathname), {
+    timeout,
+    waitUntil: "domcontentloaded",
+  });
   await page.waitForTimeout(600);
+}
+
+async function bodyText(page) {
+  return page
+    .evaluate(() => (document.body ? document.body.innerText || "" : ""))
+    .catch(() => "");
+}
+
+async function maybeFillPassword(page, password) {
+  if (!password) return false;
+  const field = page.locator('input[type="password"]:visible').first();
+  if (!(await field.count().catch(() => 0))) return false;
+  const current = await field.inputValue().catch(() => "");
+  if (!current) await field.fill(password).catch(() => {});
+  await clickButton(page, ["Next", "Sign in", "Continue"]).catch(() => {});
+  info("admin password filled; continuing");
+  return true;
 }
 
 async function maybeFillPhone(page, phone) {
   if (!phone) return false;
   const field = page
-    .locator('input[type="tel"]:visible, input[autocomplete="tel"]:visible, input[aria-label*="phone" i]:visible')
+    .locator(
+      'input[type="tel"]:visible, input[autocomplete="tel"]:visible, input[aria-label*="phone" i]:visible'
+    )
     .first();
-  if (!(await field.count())) return false;
+  if (!(await field.count().catch(() => 0))) return false;
+  const current = await field.inputValue().catch(() => "");
+  if (current) return false;
   await field.fill(String(phone).replace(/[^\d+]/g, "")).catch(() => {});
   await clickButton(page, ["send", "send code", "next", "verify"]).catch(() => {});
+  info("phone number filled; waiting for Google");
   return true;
 }
 
-function looksLikeGate(url, text) {
-  const body = String(text || "").toLowerCase();
-  return (
-    /phone|sms|text message|verification code|captcha|verify it.s you/i.test(body) ||
-    /phone|verify|challenge|captcha/i.test(url)
+function looksLikeSuccess(url, text) {
+  if (hostOf(url) === "admin.google.com") return true;
+  if (/\/signup\/(success|complete|welcome)/i.test(url)) return true;
+  if (/create a username|confirm password|agree and continue/i.test(text)) return false;
+  try {
+    const parsed = new URL(url);
+    if (
+      parsed.hostname === "workspace.google.com" &&
+      !/\/gcpidentity\/signup/i.test(parsed.pathname)
+    ) {
+      return true;
+    }
+  } catch (_) {
+    // malformed URL
+  }
+  return /your account is ready|your google workspace account is ready|tenant is ready|you.re all set up/i.test(
+    text
   );
+}
+
+function looksLikeRejection(text) {
+  return /sorry,? we can.?t complete your signup|we can.?t create your account|too many unsuccessful attempts|this phone number (?:can.?t|cannot) be used|signup was blocked|domain.*(?:already|registered|in use)|already.*(?:registered|in use).*domain/i.test(
+    text
+  );
+}
+
+async function markTenantCreated() {
+  await mutate((draft) => {
+    draft.setup.done["tenant.signup"] = true;
+    draft.setup.done["tenant.agreement"] = true;
+    draft.setup.done["tenant.about"] = true;
+    draft.setup.done["tenant.business"] = true;
+    draft.setup.done["tenant.domain-name"] = true;
+    draft.setup.done["tenant.admin"] = true;
+    draft.setup.auto.phase = "";
+  });
 }
 
 export async function run(argv) {
@@ -138,6 +182,7 @@ export async function run(argv) {
       password: { type: "string" },
       phone: { type: "string" },
       employees: { type: "string", default: "just-you" },
+      "gate-timeout": { type: "string", default: "1800" },
       profile: { type: "string", default: "setup" },
       headless: { type: "boolean", default: false },
       channel: { type: "string", default: "chrome" },
@@ -159,7 +204,7 @@ export async function run(argv) {
   const domain =
     cleanDomain(values.domain) || (subdomain ? `${subdomain}.duckdns.org` : "");
   if (!values.manual && !domain) {
-    throw new Error("a domain is required: pass --domain or --subdomain, or run `rac duckdns` first");
+    throw new Error("a domain is required: pass --domain or --subdomain, or run `rac start`");
   }
 
   const business =
@@ -177,6 +222,7 @@ export async function run(argv) {
   const password =
     values.password || (sameTenant ? saved.adminPassword : "") || makeAdminPassword();
   const timeout = Number(values.timeout) * 1000;
+  const gateTimeout = Math.max(60, Number(values["gate-timeout"]) || 1800) * 1000;
 
   if (subdomain && saved.subdomain && saved.subdomain !== subdomain) {
     await mutate((draft) => {
@@ -193,6 +239,7 @@ export async function run(argv) {
       firstName: first,
       lastName: last,
       adminUser,
+      adminEmail: `${adminUser}@${domain}`,
       adminPassword: password,
       recoveryEmail: contact,
       domain,
@@ -205,7 +252,6 @@ export async function run(argv) {
   info(`business: ${business}`);
   info(`domain:   ${domain}`);
   info(`admin:    ${adminUser}@${domain}`);
-  if (phoneGatePreview(values.phone)) info(`phone:    ${values.phone}`);
 
   const context = await launchContext({
     profile: values.profile,
@@ -282,30 +328,153 @@ export async function run(argv) {
     const agreed = await clickButton(page, ["Agree and continue"]);
     if (!agreed) warn("could not find the Agree and continue button");
 
-    // The gate: phone, SMS, captcha, or a rejection message.
-    await page.waitForTimeout(4000);
-    const text = await page.evaluate(() => (document.body ? document.body.innerText : "")).catch(() => "");
-    const url = page.url();
-    if (hostOf(url) === "admin.google.com") {
-      await mutate((draft) => {
-        draft.setup.done["tenant.about"] = true;
-        draft.setup.done["tenant.business"] = true;
-        draft.setup.done["tenant.domain-name"] = true;
-        draft.setup.done["tenant.signup"] = true;
-        draft.setup.done["tenant.agreement"] = true;
-      });
-      ok("tenant created — landed in the Admin console");
-    } else if (looksLikeGate(url, text)) {
-      await mutate((draft) => {
-        draft.setup.done["tenant.about"] = true;
-        draft.setup.done["tenant.business"] = true;
-        draft.setup.done["tenant.domain-name"] = true;
-      });
-      warn("Google's phone/captcha gate is up — finish it in the browser window");
-      await maybeFillPhone(page, values.phone);
-    } else {
-      warn("signup did not reach the Admin console; check the browser for the next screen");
+    // Step 6: phone/QR gate. Everything here is automatic except the actual
+    // phone action; the CLI focuses the window, beeps and extracts any number
+    // and message Google wants you to send.
+    const seen = new Set();
+    const deadline = Date.now() + gateTimeout;
+    let lastNotice = "";
+    let created = false;
+
+    while (Date.now() < deadline) {
+      if (page.isClosed()) throw new Error("the browser was closed before the tenant was created");
+      let url = "";
+      try {
+        url = page.url();
+      } catch (_) {
+        throw new Error("the browser was closed before the tenant was created");
+      }
+      const text = await bodyText(page);
+      const kind = classifyPhoneText(text);
+
+      if (/passwords? don.?t match|username (?:is )?(?:not available|already taken)|enter a valid email/i.test(text)) {
+        throw new Error(`signup form rejected the values: ${oneLine(text, 220)}`);
+      }
+
+      if (looksLikeRejection(text)) {
+        await saveDebug(page, "signup-rejected").catch(() => {});
+        throw new Error(
+          `Google rejected the signup: ${oneLine(text, 220) || "no message"} — ` +
+            "wait a while or try a different network/phone; this is Google's anti-abuse check, not a CLI bug"
+        );
+      }
+
+      if (looksLikeSuccess(url, text)) {
+        created = true;
+        break;
+      }
+
+      if (kind === "captcha") {
+        if (lastNotice !== "captcha") {
+          lastNotice = "captcha";
+          await actionNeeded(page, {
+            title: "Solve the captcha",
+            lines: ["Google wants a captcha. Solve it in the focused browser window."],
+          });
+        }
+        await page.waitForTimeout(1800);
+        continue;
+      }
+
+      if (await maybeFillPassword(page, password)) {
+        await page.waitForTimeout(1800);
+        continue;
+      }
+
+      const qrish =
+        kind === "qr" ||
+        kind === "send-sms" ||
+        kind === "consent-link" ||
+        /qr|scan|send\b[^.!?\n]{0,50}\b(?:sms|text|message)|verify your device/i.test(text);
+
+      if (!qrish && (kind === "code-entry" || (kind !== "phone-entry" && (await hasVisibleCodeInput(page))))) {
+        if (values.headless) {
+          throw new Error("Google's verification code page needs a visible browser; rerun without --headless");
+        }
+        if (lastNotice !== "code-entry") {
+          lastNotice = "code-entry";
+          await actionNeeded(page, {
+            title: "Enter the code Google sent you",
+            lines: [
+              "Check your phone and type the code into the focused browser window.",
+              values.phone ? `Number used: ${values.phone}` : "",
+            ].filter(Boolean),
+          });
+        }
+        await page.waitForTimeout(2200);
+        continue;
+      }
+
+      if (!qrish && (kind === "phone-entry" || (kind !== "code-entry" && (await hasVisiblePhoneInput(page))))) {
+        if (values.headless) {
+          throw new Error("Google's phone page needs a visible browser; rerun without --headless");
+        }
+        if (values.phone) {
+          const filled = await maybeFillPhone(page, values.phone);
+          if (filled) {
+            lastNotice = "phone-filled";
+            await page.waitForTimeout(1800);
+            continue;
+          }
+        }
+        if (lastNotice !== "phone-entry") {
+          lastNotice = "phone-entry";
+          await actionNeeded(page, {
+            title: "Google wants your phone number",
+            lines: [
+              "Type your number in the focused browser window (or rerun with --phone).",
+              "Google will text you a code; enter it on the next page.",
+            ],
+          });
+        }
+        await page.waitForTimeout(1800);
+        continue;
+      }
+
+      if (qrish || kind === "verification") {
+        if (values.headless) {
+          throw new Error("Google's phone/QR gate needs a visible browser; rerun without --headless");
+        }
+        const scan = await showPhoneGate(page, context, { seen });
+        if (scan.kind === "rejected") {
+          throw new Error(`Google rejected the signup: ${oneLine(scan.text, 220)}`);
+        }
+        lastNotice = scan.kind;
+        await page.waitForTimeout(2200);
+        continue;
+      }
+
+      if (
+        kind === "unknown" &&
+        hostOf(url) === "accounts.google.com" &&
+        /verify|qr|scan|phone|security|challenge|code/i.test(text)
+      ) {
+        await showPhoneGate(page, context, { seen });
+        await page.waitForTimeout(1800);
+        continue;
+      }
+
+      if (/verify|phone|sms|code|qr|recovery/i.test(text) && lastNotice !== "unknown-gate") {
+        lastNotice = "unknown-gate";
+        await actionNeeded(page, {
+          title: "Google needs you",
+          lines: ["Finish the verification in the focused browser window."],
+        });
+      }
+
+      await page.waitForTimeout(1600);
     }
+
+    if (!created) {
+      await saveDebug(page, "signup-gate-timeout").catch(() => {});
+      throw new Error(
+        `Google verification did not finish within ${Math.round(gateTimeout / 1000)}s — ` +
+          "finish it in the browser and run `rac start` again"
+      );
+    }
+
+    await markTenantCreated();
+    ok("tenant created — continuing");
 
     if (values.screenshot) {
       await fs.mkdir(DEBUG_ROOT, { recursive: true });
@@ -316,35 +485,8 @@ export async function run(argv) {
       info(`screenshot: ${file}`);
     }
 
-    if (values.headless) {
-      warn("headless mode cannot complete the phone gate — closing the browser");
-      return 0;
-    }
-    console.log("finish the gate in the browser — press Ctrl+C to close");
-    const monitor = setInterval(async () => {
-      let host = "";
-      try {
-        host = hostOf(page.url());
-      } catch (_) {
-        clearInterval(monitor);
-        return;
-      }
-      if (host !== "admin.google.com") return;
-      clearInterval(monitor);
-      await mutate((draft) => {
-        draft.setup.done["tenant.signup"] = true;
-        draft.setup.done["tenant.agreement"] = true;
-      }).catch(() => {});
-      ok("tenant created — Admin console detected");
-    }, 2000);
-    try {
-      await new Promise((resolve) => {
-        process.once("SIGINT", resolve);
-        process.once("SIGTERM", resolve);
-        context.once("close", resolve);
-      });
-    } finally {
-      clearInterval(monitor);
+    if (values["keep-open"]) {
+      await stayOpen(context, { message: "tenant created — press Ctrl+C to close" });
     }
     return 0;
   } catch (error) {
@@ -356,8 +498,4 @@ export async function run(argv) {
   } finally {
     await context.close().catch(() => {});
   }
-}
-
-function phoneGatePreview(phone) {
-  return Boolean(phone);
 }

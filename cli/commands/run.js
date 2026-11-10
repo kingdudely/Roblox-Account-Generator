@@ -5,6 +5,7 @@ import { makeIdentityFields } from "../../extension/lib/names.js";
 import { createLaneApi, installLaneApi } from "../lane-api.js";
 import { resolveKeyArg } from "../key-flow.js";
 import { sendGoogleFill } from "../content-bridge.js";
+import { actionNeeded } from "../flow/human.js";
 import { load, mutate, requireKey } from "../state.js";
 import { exportAccounts } from "./export.js";
 import { info, ok, warn } from "../util.js";
@@ -272,6 +273,7 @@ export async function run(argv) {
   }
 
   const laneIdentities = new Map();
+  const humanNotices = new Set();
   const laneApi = await createLaneApi({
     headless: values.headless,
     channel: values.channel,
@@ -287,6 +289,22 @@ export async function run(argv) {
         if (message.level === "error" || message.level === "warn") warn(text);
         else if (message.level === "ok") ok(text);
         else info(text);
+        if (
+          page &&
+          /manual finalise|phone challenge|policy wall|captcha image|type the text you hear or see|verify it.s you|enter the code|scan the qr/i.test(text)
+        ) {
+          const notice = `${lane.storeId}:${text.slice(0, 100)}`;
+          if (!humanNotices.has(notice)) {
+            humanNotices.add(notice);
+            void actionNeeded(page, {
+              title: "A lane needs you",
+              lines: [
+                "Finish the challenge in the focused lane tab.",
+                "The run resumes automatically when the page moves on.",
+              ],
+            }).catch(() => {});
+          }
+        }
         return;
       }
       if (message.type === "identity-totp" && message.secret) {

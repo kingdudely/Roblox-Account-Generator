@@ -1,6 +1,6 @@
 {
   "name": "roblox-alt-creator",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "private": true,
   "type": "module",
   "description": "Local CLI for creating Cloud Identity tenants, OAuth keys and Roblox accounts",
@@ -12,6 +12,11 @@
   },
   "scripts": {
     "rac": "node bin/rac.js",
+    "start": "node bin/rac.js start",
+    "create-tenant": "node bin/rac.js start",
+    "setup": "node bin/rac.js start --tenant-only",
+    "status": "node bin/rac.js status",
+    "accounts": "node bin/rac.js run",
     "doctor": "node bin/rac.js doctor",
     "smoke": "node bin/rac.js smoke",
     "test": "node --test test"

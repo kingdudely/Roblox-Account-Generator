@@ -4,6 +4,7 @@ import { parseArgs } from "node:util";
 import { attachLogging, hostOf, launchContext, openPage, saveDebug, waitUntil } from "../browser.js";
 import { DEBUG_ROOT } from "../paths.js";
 import { installContentBridge } from "../content-bridge.js";
+import { actionNeeded } from "../flow/human.js";
 import { driveGoogle, resolveAdminCreds } from "../google.js";
 import { handleAuthMessage } from "../messages.js";
 import { load, mutate } from "../state.js";
@@ -17,6 +18,9 @@ const HELP = `rac duckdns [options]
 Opens DuckDNS in the persistent setup profile. With saved admin credentials it
 can sign in through Google, add the subdomain and capture the account token.
 If no credentials are configured it opens the page and waits for you to sign in.
+
+\`rac start\` runs this after the tenant is created, using the new tenant admin
+account. The DuckDNS subdomain does not need to exist before signup.
 
 Options:
   --subdomain <name>    subdomain to create (without .duckdns.org)
@@ -231,6 +235,16 @@ export async function run(argv) {
     }
 
     const timeout = Number(values.timeout) * 1000;
+    if (!creds.email) {
+      await actionNeeded(page, {
+        title: "Sign in to DuckDNS",
+        lines: [
+          "Click Sign in with Google in the focused browser window.",
+          "Use the tenant admin account (the browser may already have it).",
+          "I'll add the subdomain and capture the token automatically.",
+        ],
+      });
+    }
     await waitUntil(async () => (await pageState(page)).loggedIn, {
       timeout,
       interval: 1000,
@@ -291,13 +305,21 @@ export async function run(argv) {
       info(`screenshot: ${file}`);
     }
 
-    if (values["keep-open"] || !token || !subdomain) {
+    if (values["keep-open"]) {
       console.log("DuckDNS is open — press Ctrl+C to close");
       await new Promise((resolve) => {
         process.once("SIGINT", resolve);
         process.once("SIGTERM", resolve);
         context.once("close", resolve);
       });
+      return 0;
+    }
+
+    if (!token || !subdomain) {
+      throw new Error(
+        "DuckDNS did not expose both the subdomain and token — " +
+          "finish the login in the browser, then run `rac start` again"
+      );
     }
     return 0;
   } catch (error) {

@@ -14,6 +14,7 @@ import {
   sendSetupDomainReady,
   sendSetupFill,
 } from "../content-bridge.js";
+import { actionNeeded } from "../flow/human.js";
 import { authorizeKeyWithContext } from "../consent.js";
 import { fullDomain, waitForTxt, writeTxt } from "../../extension/lib/duckdns.js";
 import { normaliseKey } from "../../extension/lib/keys.js";
@@ -118,9 +119,10 @@ Runs the automatic tenant/key sub-steps in a persistent Patchright profile. The
 CLI reuses the extension's content scripts, so it fills and clicks the same
 Admin and Cloud console pages as the extension.
 
-The tenant signup and phone/captcha gate are not automated here. Run
-\`rac signup\` once, finish the gate, then run this command with the admin
-credentials (or sign in once in the profile) and let it finish the tenant.
+This command starts after the tenant and DuckDNS record exist. For the whole
+pipeline (signup -> phone/QR gate -> DuckDNS with the tenant admin -> setup ->
+Roblox account), use \`rac start\`. If you run this command alone, the domain
+and DuckDNS token must already be saved.
 
 Options:
   --phase <id>         run only this sub-step (repeatable)
@@ -304,7 +306,7 @@ async function runPhase(page, phase, ctx) {
     draft.setup.auto.phase = phase.id;
   });
 
-  const deadline = Date.now() + phase.timeout;
+  let deadline = Date.now() + phase.timeout;
   while (Date.now() < deadline) {
     const signal = signals.get(phase.id);
     if (signal?.done) return signal;
@@ -312,6 +314,30 @@ async function runPhase(page, phase, ctx) {
     if (page.isClosed()) throw new Error("the setup page was closed");
 
     await handoff(page, phase.id, ctx).catch(() => {});
+
+    const challenge = await page
+      .evaluate(() => {
+        const text = document.body ? document.body.innerText || "" : "";
+        if (/captcha|type the text you hear or see/i.test(text)) return "captcha";
+        const url = location.href;
+        if (
+          /accounts\.google\.com|myaccount\.google\.com|challenge|signin/i.test(url) &&
+          /verify it.s you|2-step verification|enter (the )?code|try another way/i.test(text)
+        ) {
+          return "verification";
+        }
+        return "";
+      })
+      .catch(() => "");
+    if (challenge && !ctx.seenChallenges.has(`${phase.id}:${challenge}`)) {
+      ctx.seenChallenges.add(`${phase.id}:${challenge}`);
+      deadline = Math.max(deadline, Date.now() + 5 * 60_000);
+      await actionNeeded(page, {
+        title: challenge === "captcha" ? "Solve the captcha" : "Google needs extra verification",
+        lines: ["Finish it in the focused setup window. I'll continue after it."],
+      }).catch(() => {});
+    }
+
     await page.waitForTimeout(1200);
   }
 
@@ -562,6 +588,7 @@ export async function run(argv) {
     pendingKey: null,
     cancelled: false,
     signals,
+    seenChallenges: new Set(),
     state,
   };
 
@@ -690,6 +717,10 @@ export async function run(argv) {
     }
     if (message.type === "setup-captcha") {
       warn("Google wants a captcha — solve it in the setup window; the run continues after that");
+      await actionNeeded(sourcePage, {
+        title: "Solve the captcha",
+        lines: ["Google wants a captcha in the setup window. I'll continue after it."],
+      }).catch(() => {});
       return;
     }
     await handleAuthMessage(message, sourcePage);

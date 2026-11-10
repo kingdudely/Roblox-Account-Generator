@@ -12,8 +12,12 @@ import * as identity from "./commands/identity.js";
 import * as runCommand from "./commands/run.js";
 import * as exportCommand from "./commands/export.js";
 import * as stateCommand from "./commands/state.js";
+import * as start from "./commands/start.js";
+import * as status from "./commands/status.js";
 
 const COMMANDS = {
+  start,
+  status,
   doctor,
   smoke,
   admin,
@@ -27,45 +31,63 @@ const COMMANDS = {
   state: stateCommand,
 };
 
+const ALIASES = {
+  create: "start",
+  up: "start",
+  auto: "start",
+  next: "start",
+  continue: "start",
+  progress: "status",
+  accounts: "run",
+};
+
 function help() {
-  console.log(`${color.bold("rac")} — Roblox Alt Creator CLI
+  console.log(`${color.bold("rac")} — Google tenant → Roblox account
 
-Usage:
-  rac <command> [options]
+Start here:
+  rac start                 create/repair the tenant, key and account(s)
+  rac status                show progress and the next step
 
-Commands:
-  doctor      check Node, Patchright, Chrome, profiles and trusted input
-  smoke       verify a trusted click and navigator.webdriver
-  admin       open or sign in to the Google Admin console
-  duckdns     open DuckDNS, add a subdomain and capture the token
-  signup      prefill the Cloud Identity signup and stop at the phone gate
-  setup       run the automatic tenant and key sub-steps
-  key         import, list, check, authorize, recover and remove keys
-  identity    create and list Google identities with the Admin SDK
-  run         create identities and run Roblox Google-SSO lanes
-  export      export accounts to a text file
-  state       show the state path and a short summary
+Everyday:
+  rac run --count 5         create Roblox accounts with a ready key
+  rac export                write accounts.txt
+  rac key ...               manage OAuth keys
+  rac identity ...          manage Google identities
 
-Global paths:
-  home        ${APP_HOME}
-  state       ${STATE_PATH}
-  profiles    ${PROFILE_ROOT}
+One-time setup pieces:
+  rac start --tenant-only   stop after the OAuth key is ready
+  rac signup                just the Google signup form
+  rac duckdns               just the DuckDNS record
+  rac setup                 just the tenant/key steps
+  rac admin                 open the Admin console
 
-Run "rac <command> --help" for command options.
+Checks:
+  doctor, smoke, state
+
+Paths:
+  home       ${APP_HOME}
+  state      ${STATE_PATH}
+  profiles   ${PROFILE_ROOT}
+
+Run "rac <command> --help" for options.
 `);
 }
 
 export async function main(argv) {
   const [name, ...rest] = argv;
-  if (!name || name === "help" || name === "--help" || name === "-h") {
+  if (!name) {
+    return status.run([]);
+  }
+  if (name === "help" || name === "--help" || name === "-h") {
     help();
     return 0;
   }
   if (name === "--version" || name === "version") {
-    console.log("rac 0.9.0");
+    console.log("rac 0.10.0");
     return 0;
   }
-  const command = COMMANDS[name];
+  const resolved = ALIASES[name] || name;
+  const command = COMMANDS[resolved];
   if (!command) {
     throw new Error(`unknown command: ${name} (try "rac help")`);
   }
