@@ -367,6 +367,19 @@ function gateKey(scan) {
   return [scan.kind, scan.number || "", scan.body || "", scan.payload || ""].join("|");
 }
 
+async function bringQrIntoView(page) {
+  await page
+    .evaluate(() => {
+      const nodes = [...document.querySelectorAll("canvas,img,svg")];
+      const best = nodes
+        .map((element) => ({ element, rect: element.getBoundingClientRect() }))
+        .filter(({ rect }) => rect.width >= 100 && rect.height >= 100)
+        .sort((a, b) => b.rect.width * b.rect.height - a.rect.width * a.rect.height)[0];
+      if (best) best.element.scrollIntoView({ block: "center", inline: "center" });
+    })
+    .catch(() => {});
+}
+
 // Focus the browser, make a noise, and put Google's number/message on screen.
 // The caller keeps polling; this function never waits for the user.
 export async function showPhoneGate(page, context, { seen = new Set() } = {}) {
@@ -415,6 +428,7 @@ export async function showPhoneGate(page, context, { seen = new Set() } = {}) {
   }
 
   if (scan.kind === "consent-link" && scan.payload) {
+    await bringQrIntoView(page);
     await actionNeeded(page, {
       title: "Scan the QR code with your phone",
       lines: [
@@ -427,6 +441,7 @@ export async function showPhoneGate(page, context, { seen = new Set() } = {}) {
   }
 
   if (scan.kind === "qr" || /qr|scan|verify your device/i.test(scan.text || "")) {
+    await bringQrIntoView(page);
     await actionNeeded(page, {
       title: "Scan the QR code with your phone",
       lines: [
