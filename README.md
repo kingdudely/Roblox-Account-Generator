@@ -79,6 +79,7 @@ the destination number/message so you can send it directly. See
 | `rac start --accounts 5` | Create five Roblox accounts after setup |
 | `rac status` | Checklist and the next command |
 | `rac run --count 5` | Create more accounts with the ready key |
+| `rac farm` | Run forever, one account at a time, exporting after each |
 | `rac export` | Write `accounts.txt` |
 | `rac key …` | Import, list, check, authorize, recover, remove, export keys |
 | `rac identity …` | Create/list/delete Google identities, check 2SV, mint codes |
@@ -174,6 +175,17 @@ Everything already checked is skipped. To force a step:
 ```bash
 rac start --from setup
 ```
+
+### Infinite mode
+
+```bash
+npm run farm -- --out /home/john/Downloads/roblox-accounts-rac.txt --pause 60
+```
+
+Runs one account at a time forever. It exports after each success, waits `--pause`
+seconds, and keeps going after failures (with a longer backoff). `--max-failures`
+stops after a chosen number of consecutive failures; the default `0` never
+stops. Ctrl+C stops after the current account.
 
 ## Optional Firefox extension
 

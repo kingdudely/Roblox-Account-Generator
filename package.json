@@ -17,6 +17,7 @@
     "setup": "node bin/rac.js start --tenant-only",
     "status": "node bin/rac.js status",
     "accounts": "node bin/rac.js run",
+    "farm": "node bin/rac.js farm",
     "record-signup": "node bin/rac.js record-signup",
     "doctor": "node bin/rac.js doctor",
     "smoke": "node bin/rac.js smoke",

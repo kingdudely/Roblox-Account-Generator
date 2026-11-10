@@ -15,6 +15,7 @@ import * as stateCommand from "./commands/state.js";
 import * as start from "./commands/start.js";
 import * as status from "./commands/status.js";
 import * as recordSignup from "./commands/record-signup.js";
+import * as farm from "./commands/farm.js";
 
 const COMMANDS = {
   start,
@@ -31,6 +32,7 @@ const COMMANDS = {
   export: exportCommand,
   state: stateCommand,
   "record-signup": recordSignup,
+  farm,
 };
 
 const ALIASES = {
@@ -42,6 +44,7 @@ const ALIASES = {
   progress: "status",
   accounts: "run",
   record: "record-signup",
+  forever: "farm",
 };
 
 function help() {
@@ -53,6 +56,7 @@ Start here:
 
 Everyday:
   rac run --count 5         create Roblox accounts with a ready key
+  rac farm                  generate forever, one at a time (Ctrl+C stops)
   rac export                write accounts.txt
   rac key ...               manage OAuth keys
   rac identity ...          manage Google identities
